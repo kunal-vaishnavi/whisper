@@ -14,9 +14,11 @@ import time
 import torch
 import whisper
 
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+from transformers import pipeline as pt_pipeline
 from transformers.onnx.utils import get_preprocessor
 from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
-from optimum.pipelines import pipeline
+from optimum.pipelines import pipeline as ort_pipeline
 from onnxruntime.transformers.benchmark_helper import measure_memory
 
 # Data generator from optimum test cases
@@ -43,7 +45,7 @@ def parse_args():
         '--modes',
         required=False,
         nargs='+',
-        default=[],
+        default=['hf-pipe'],
         help="Options are: ['hf-pipe', 'hf-token', 'hf-logits', 'hf-ort-logits', 'ort']",
     )
 
@@ -65,6 +67,15 @@ def parse_args():
     )
 
     parser.add_argument(
+        '-e',
+        '--engine',
+        required=False,
+        type=str,
+        default='ort',
+        choices=['ort', 'pt'],
+    )
+
+    parser.add_argument(
         '-v',
         '--verbose',
         required=False,
@@ -73,24 +84,36 @@ def parse_args():
     )
     parser.set_defaults(verbose=False)
 
+    parser.add_argument(
+        '--decoder_sequence_length',
+        required=False,
+        type=int,
+        default=20,
+    )
+
     args = parser.parse_args()
     
-    device_to_ep = {'cuda': 'CUDAExecutionProvider', 'cpu': "CPUExecutionProvider"}
-    setattr(args, 'providers', [device_to_ep[args.device]])
+    if args.engine == 'ort':
+        device_to_ep = {'cuda': 'CUDAExecutionProvider', 'cpu': "CPUExecutionProvider"}
+        setattr(args, 'providers', [device_to_ep[args.device]])
     return args
 
 def main():
     args = parse_args()
     print(args.__dict__)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    decoder_sequence_length = 20
 
     # Variables used in the different run options
     model_id = "openai/whisper-tiny.en"
-    processor = get_preprocessor(model_id)
-    onnx_model = ORTModelForSpeechSeq2Seq.from_pretrained(model_id, from_transformers=True, use_io_binding=True).to(device)
-    decoder_start_token_id = onnx_model._get_decoder_start_token_id()
-    decoder_inputs = {"decoder_input_ids": torch.ones((args.batch_size, decoder_sequence_length), dtype=torch.long) * decoder_start_token_id}
+    if args.engine == 'ort':
+        processor = get_preprocessor(model_id)
+        model = ORTModelForSpeechSeq2Seq.from_pretrained(model_id, from_transformers=True, use_io_binding=True).to(args.device)
+        pipeline = lambda *args, **kwargs: ort_pipeline(*args, **kwargs)
+    else:
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id).to(args.device)
+        pipeline = lambda *args, **kwargs: pt_pipeline(*args, **kwargs)
+    decoder_start_token_id = model._get_decoder_start_token_id()
+    decoder_inputs = {"decoder_input_ids": torch.ones((args.batch_size, args.decoder_sequence_length), dtype=torch.long) * decoder_start_token_id}
 
     # Load audio file
     audio = whisper.load_audio('tests/jfk.flac')
@@ -104,9 +127,9 @@ def main():
     # 2) HuggingFace
     features = processor.feature_extractor([audio] * args.batch_size, return_tensors="pt")
     
-    # Move audio info to torch device, then assert shapes and values
-    mel_spectrogram = torch.from_numpy(mel_spectrogram).to(device)
-    features = features.to(device)
+    # Move audio info to torch and device, then assert shapes and values
+    mel_spectrogram = torch.from_numpy(mel_spectrogram).to(args.device)
+    features = features.to(args.device)
     if args.verbose:
         print("log-Mel spectrogram:", mel_spectrogram.shape)
         assert features['input_features'].shape == mel_spectrogram.shape
@@ -117,10 +140,10 @@ def main():
         # Option 1: Pipeline
         pipe = pipeline(
             "automatic-speech-recognition",
-            model=onnx_model,
+            model=model,
             tokenizer=processor.tokenizer,
             feature_extractor=processor.feature_extractor,
-            device=(-1 if device == 'cpu' else 0),
+            device=(-1 if args.device == 'cpu' else 0),
         )
         start_time = time.time()
         outputs = pipe([audio] * args.batch_size)
@@ -139,7 +162,7 @@ def main():
     if 'hf-token' in args.modes:
         # Option 2: No pipeline
         start_time = time.time()
-        ids = onnx_model.generate(**features, num_beams=5)
+        ids = model.generate(**features, num_beams=5)
         outputs = processor.tokenizer.batch_decode(ids, skip_special_tokens=True)
         end_time = time.time()
         latency = end_time - start_time
@@ -156,7 +179,7 @@ def main():
 
     if 'hf-logits' in args.modes:
         # Option 3: Manual calculation using logits
-        outputs = onnx_model(**features, **decoder_inputs)
+        outputs = model(**features, **decoder_inputs)
         if args.verbose:
             print("Logits through combined encoder/decoder:", outputs.logits.shape)
             # ids = outputs.logits.argmax(dim=-1)
@@ -167,11 +190,11 @@ def main():
     
     if 'hf-ort-logits' in args.modes:
         # Option 4: Using native ORT but with HuggingFace's ONNX model
-        logits_shape, matmul_711_shape = [args.batch_size, decoder_sequence_length, 51864], [args.batch_size, 1500, 384]
-        input_features_ort = onnxruntime.OrtValue.ortvalue_from_numpy(features['input_features'].detach().cpu().numpy(), device, 0)
-        decoder_input_ids_ort = onnxruntime.OrtValue.ortvalue_from_numpy(decoder_inputs['decoder_input_ids'].detach().cpu().numpy(), device, 0)
-        logits_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(logits_shape, input_features_ort.numpy().dtype, device, 0)
-        matmul_711_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(matmul_711_shape, input_features_ort.numpy().dtype, device, 0)
+        logits_shape, matmul_711_shape = [args.batch_size, args.decoder_sequence_length, 51864], [args.batch_size, 1500, 384]
+        input_features_ort = onnxruntime.OrtValue.ortvalue_from_numpy(features['input_features'].detach().cpu().numpy(), args.device, 0)
+        decoder_input_ids_ort = onnxruntime.OrtValue.ortvalue_from_numpy(decoder_inputs['decoder_input_ids'].detach().cpu().numpy(), args.device, 0)
+        logits_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(logits_shape, input_features_ort.numpy().dtype, args.device, 0)
+        matmul_711_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(matmul_711_shape, input_features_ort.numpy().dtype, args.device, 0)
 
         session = onnxruntime.InferenceSession(os.path.join("hf_onnx", "model.onnx"), providers=args.providers)
         io_binding = session.io_binding()
@@ -195,8 +218,8 @@ def main():
         audio_features_shape = [args.batch_size, 1500, 384]
 
         # Run encoder through ORT
-        mel_spectrogram_ort = onnxruntime.OrtValue.ortvalue_from_numpy(mel_spectrogram.detach().cpu().numpy(), device, 0)
-        audio_features_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(audio_features_shape, mel_spectrogram.detach().cpu().numpy().dtype, device, 0)
+        mel_spectrogram_ort = onnxruntime.OrtValue.ortvalue_from_numpy(mel_spectrogram.detach().cpu().numpy(), args.device, 0)
+        audio_features_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(audio_features_shape, mel_spectrogram.detach().cpu().numpy().dtype, args.device, 0)
 
         session = onnxruntime.InferenceSession(os.path.join(args.path, "encoder.onnx"), providers=args.providers)
         io_binding = session.io_binding()
@@ -208,11 +231,11 @@ def main():
         print(f"Encoder took {time.time() - start_time} seconds")
 
         # Run decoder through ORT
-        text_tokens = np.ones((args.batch_size, decoder_sequence_length), dtype=np.int64) * decoder_start_token_id
-        logits_shape = [args.batch_size, decoder_sequence_length, 51865]
+        text_tokens = np.ones((args.batch_size, args.decoder_sequence_length), dtype=np.int64) * decoder_start_token_id
+        logits_shape = [args.batch_size, args.decoder_sequence_length, 51865]
 
-        text_tokens_ort = onnxruntime.OrtValue.ortvalue_from_numpy(text_tokens, device, 0)
-        logits_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(logits_shape, audio_features_ort.numpy().dtype, device, 0)
+        text_tokens_ort = onnxruntime.OrtValue.ortvalue_from_numpy(text_tokens, args.device, 0)
+        logits_ort = onnxruntime.OrtValue.ortvalue_from_shape_and_type(logits_shape, audio_features_ort.numpy().dtype, args.device, 0)
 
         session = onnxruntime.InferenceSession(os.path.join(args.path, "decoder.onnx"), providers=args.providers)
         io_binding = session.io_binding()
