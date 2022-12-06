@@ -130,7 +130,7 @@ def main():
 
         gc.collect()
         torch.cuda.empty_cache()
-        measure_memory(is_gpu=True, func=lambda: pipe([audio] * args.batch_size))
+        measure_memory(is_gpu=(args.device == 'cuda'), func=lambda: pipe([audio] * args.batch_size))
 
         if args.verbose:
             print(outputs) # outputs is of the form [{'text': '<translation>'}, ...]
@@ -147,7 +147,7 @@ def main():
 
         gc.collect()
         torch.cuda.empty_cache()
-        measure_memory(is_gpu=True, func=lambda: pipe([audio] * args.batch_size))
+        measure_memory(is_gpu=(args.device == 'cuda'), func=lambda: pipe([audio] * args.batch_size))
 
         if args.verbose:
             print(ids)
