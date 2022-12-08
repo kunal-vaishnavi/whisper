@@ -101,7 +101,6 @@ def parse_args():
     group.add_argument(
         '-p',
         '--precision',
-        default='fp32',
         choices=['fp16', 'fp32'],
         help='Precision of Whisper PyTorch models',
     )
