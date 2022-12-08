@@ -9,5 +9,6 @@ thumbs.db
 .DS_Store
 .idea
 
-# Ignore onnx models
+# Ignore onnx models and log files
 *onnx/
+*.log

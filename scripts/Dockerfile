@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install necessary software through apt-get
 RUN apt-get update --fix-missing
 RUN apt-get install -y sudo vim git bash python3 python3-dev python3-pip python3-wheel ffmpeg
-RUN cd /usr/local/bin && ln -s /usr/bin/python3 python && ln -s /usr/bin/pip3 pip;
+RUN cd /usr/local/bin && ln -s /usr/bin/python3 python && ln -s /usr/bin/pip3 pip
 RUN apt-get update
 
 # Install necessary software through pip

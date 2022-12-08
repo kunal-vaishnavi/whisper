@@ -5,11 +5,12 @@
 # python3 whisper_with_ort.py --batch_size <batch-size> --device <device> --engine <engine>
 # Append --path <path> for ORT engine, --precision <precision> for PyTorch engine
 #
-# Note: To run PyTorch FP16, you will also need to complete the following steps.
+# To run PyTorch FP16 and/or PyTorch 2.0:
 # 1) git clone https://github.com/huggingface/transformers && cd transformers
 # 2) Go to src/transformers/pipelines/automatic_speech_recognition.py
-# 3) Make the following change:
-# 
+# 3) Mmake the following changes:
+#
+# 3a) To run PyTorch FP16: 
 # Before:
 # processed = self.feature_extractor(
 #    inputs, sampling_rate=self.feature_extractor.sampling_rate, return_tensors="pt"
@@ -22,10 +23,20 @@
 # import torch
 # processed['input_features'] = processed['input_features'].to(torch.float16)
 #
+# 3b) To run PyTorch 2.0:
+# Before:
+# if self.model.__class__ in MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING.values():
+#     self.type = "seq2seq"
+#
+# After:
+# import torch
+# if self.model.__class__ in MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING.values() or isinstance(self.model, torch._dynamo.eval_frame.OptimizedModule):
+#     self.type = "seq2seq"
+#
 # 4) Go back to parent folder where setup.py is
 # 5) pip install -e .
 #
-# Note: Comment out the change when not running PyTorch FP16.
+# Note: Comment out the changes when not running PyTorch FP16 and/or PyTorch 2.0.
 ############################################################################################
 
 import argparse
@@ -132,6 +143,15 @@ def parse_args():
     )
 
     parser.add_argument(
+        '-pt2',
+        '--pytorch2',
+        required=False,
+        action='store_true',
+        help='Whether to use PyTorch 2.0 (i.e. whether to use torch.compile(model) or not)',
+    )
+    parser.set_defaults(pytorch2=False)
+
+    parser.add_argument(
         '-v',
         '--verbose',
         required=False,
@@ -148,6 +168,8 @@ def main():
     print(args.__dict__)
     torch.backends.cudnn.benchmark = True
     processor, model, pipeline = get_vars(args)
+    if args.pytorch2:
+        model = torch.compile(model)
 
     # Load audio file
     audio = whisper.load_audio('tests/jfk.flac')
