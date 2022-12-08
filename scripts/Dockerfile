@@ -20,14 +20,13 @@ RUN pip install torch torchaudio torchvision --pre --extra-index-url https://dow
 RUN pip install numpy==1.23.3 transformers optimum onnx coloredlogs psutil py3nvml onnxconverter_common onnxruntime-gpu whisper.ai ffmpeg-python
 RUN pip install --upgrade transformers optimum
 
-# Get Whisper repo to have access to whisper_to_onnx.py and whisper_with_ort.py
+# Get Whisper repo
 WORKDIR home/
 RUN git clone ${WHISPER_REPO}
 RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
 
-# Install hf_onnx/ and onnx/tiny/ folders
-RUN cd whisper && python3 -m optimum.exporters.onnx --model openai/whisper-tiny.en hf_onnx/
-RUN cd whisper && python3 whisper_to_onnx.py
+# Install onnx/tiny/ folder
+RUN cd whisper && python3 whisper_hf_to_onnx.py -s tiny
 
 
 
@@ -45,10 +44,9 @@ RUN cd whisper && python3 whisper_to_onnx.py
 # RUN apt-get install ffmpeg
 # RUN pip install --upgrade transformers optimum whisper.ai ffmpeg-python
 
-# # Get Whisper repo to have access to whisper_to_onnx.py and whisper_with_ort.py
+# # Get Whisper repo
 # RUN git clone ${WHISPER_REPO}
 # RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
 
-# # Install hf_onnx/ and onnx/tiny/ folders
-# RUN cd whisper && python3 -m optimum.exporters.onnx --model openai/whisper-tiny.en hf_onnx/
-# RUN cd whisper && python3 whisper_to_onnx.py
+# # Install onnx/tiny/ folder
+# RUN cd whisper && python3 whisper_hf_to_onnx.py -s tiny
