@@ -26,7 +26,7 @@ RUN git clone ${WHISPER_REPO}
 RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
 
 # Install onnx/tiny/ folder
-RUN cd whisper && python3 whisper_hf_to_onnx.py -s tiny
+RUN cd whisper && python3 scripts/whisper_hf_to_onnx.py -s tiny
 
 
 
@@ -49,4 +49,4 @@ RUN cd whisper && python3 whisper_hf_to_onnx.py -s tiny
 # RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
 
 # # Install onnx/tiny/ folder
-# RUN cd whisper && python3 whisper_hf_to_onnx.py -s tiny
+# RUN cd whisper && python3 scripts/whisper_hf_to_onnx.py -s tiny
