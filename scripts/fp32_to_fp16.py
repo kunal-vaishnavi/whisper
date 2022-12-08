@@ -37,7 +37,6 @@ def setup_dir(folder):
 def main():
     args = parse_args()
     output_dir = setup_dir(args.folder)
-    onnx_model_path = os.path.join(output_dir, "model.onnx")
 
     for fle in os.listdir(output_dir):
         if ".onnx" in fle:
