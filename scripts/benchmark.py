@@ -44,6 +44,7 @@ import gc
 import numpy as np
 import os
 import onnxruntime
+import psutil
 import time
 import torch
 import whisper
@@ -198,6 +199,11 @@ def main():
         feature_extractor=processor.feature_extractor,
         device=(-1 if args.device == 'cpu' else 0),
     )
+
+    pid = os.getpid()
+    process = psutil.Process(pid)
+    process.cpu_percent(interval=0.1)
+
     torch.cuda.synchronize()
     start_time = time.time()
     outputs = pipe([audio] * args.batch_size)
@@ -205,6 +211,8 @@ def main():
     end_time = time.time()
     latency = end_time - start_time
     print(f"Batch size = {args.batch_size}, latency = {latency} s, throughput = {args.batch_size / latency} queries/s")
+    if args.device == 'cpu':
+        print(f"CPU percentage = {process.cpu_percent(interval=None)}%")
 
     gc.collect()
     torch.cuda.empty_cache()
