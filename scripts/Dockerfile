@@ -27,25 +27,3 @@ RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
 
 # Install onnx/tiny/ folder
 RUN cd whisper && python3 scripts/whisper_hf_to_onnx.py -s tiny && python3 scripts/fp32_to_fp16.py
-
-
-
-
-#######################################################
-# Integrating Whisper into comprehensive Docker image:
-#######################################################
-# FROM kunalva/sd_bench:latest
-
-# ARG WHISPER_REPO=https://github.com/kunal-vaishnavi/whisper
-# ARG WHISPER_BRANCH=ort
-
-# # Install necessary software
-# RUN apt-get install ffmpeg
-# RUN pip install --upgrade transformers optimum whisper.ai ffmpeg-python
-
-# # Get Whisper repo
-# RUN git clone ${WHISPER_REPO}
-# RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
-
-# # Install onnx/tiny/ folder
-# RUN cd whisper && python3 scripts/whisper_hf_to_onnx.py -s tiny && python3 scripts/fp32_to_fp16.py
