@@ -25,24 +25,25 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def setup_dir(folder):
+def setup_dir(parent_folder):
     fp16_folder_name, fp32_folder_name = "fp16", "fp32"
-    os.rename(folder, fp32_folder_name)
-    os.makedirs(folder, exist_ok=True)
+    os.rename(parent_folder, fp32_folder_name)
+    os.makedirs(parent_folder, exist_ok=True)
     shutil.copytree(fp32_folder_name, fp16_folder_name)
-    shutil.move(fp32_folder_name, folder)
-    output_dir = shutil.move(fp16_folder_name, folder)
-    return output_dir
+    fp32_path = shutil.move(fp32_folder_name, parent_folder)
+    fp16_path = shutil.move(fp16_folder_name, parent_folder)
+    return fp16_path, fp32_path
 
 def main():
     args = parse_args()
-    output_dir = setup_dir(args.folder)
+    fp16_path, fp32_path = setup_dir(args.folder)
 
-    for fle in os.listdir(output_dir):
+    for fle in os.listdir(fp32_path):
         if ".onnx" in fle:
-            onnx_model_path = os.path.join(output_dir, fle)
+            fp16_model_path = os.path.join(fp16_path, fle)
+            fp32_model_path = os.path.join(fp32_path, fle)
             m = optimize_model(
-                onnx_model_path,
+                fp32_model_path,
                 model_type="bert",
                 num_heads=0,
                 hidden_size=0,
@@ -50,9 +51,9 @@ def main():
                 optimization_options=None,
                 use_gpu=False,
             )
-
+            onnx.save_model(m.model, fp32_model_path)
             m.convert_float_to_float16()
-            onnx.save_model(m.model, onnx_model_path)
+            onnx.save_model(m.model, fp16_model_path)
 
 if __name__ == '__main__':
     main()
