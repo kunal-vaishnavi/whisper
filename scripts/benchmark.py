@@ -89,8 +89,11 @@ def get_torch(device, precision):
 def get_vars(args):
     if args.engine == 'ort':
         return get_ort(args.device, args.path)
-    if args.engine == 'pt':
-        return get_torch(args.device, args.precision)
+    if args.engine == 'pt' or args.engine == 'pt2':
+        processor, model, pipeline = get_torch(args.device, args.precision)
+        if args.engine == 'pt2':
+            model = torch.compile(model)
+        return (processor, model, pipeline)
     raise NotImplementedError('Invalid engine specified')
 
 # Data generator from optimum test cases
@@ -140,17 +143,8 @@ def parse_args():
         required=False,
         type=str,
         default='ort',
-        choices=['ort', 'pt'],
+        choices=['ort', 'pt', 'pt2'],
     )
-
-    parser.add_argument(
-        '-pt2',
-        '--pytorch2',
-        required=False,
-        action='store_true',
-        help='Whether to use PyTorch 2.0 (i.e. whether to use torch.compile(model) or not)',
-    )
-    parser.set_defaults(pytorch2=False)
 
     parser.add_argument(
         '-v',
@@ -169,8 +163,6 @@ def main():
     print(args.__dict__)
     torch.backends.cudnn.benchmark = True
     processor, model, pipeline = get_vars(args)
-    if args.pytorch2:
-        model = torch.compile(model)
 
     # Load audio file
     audio = whisper.load_audio('tests/jfk.flac')
