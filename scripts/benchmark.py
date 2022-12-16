@@ -10,7 +10,7 @@
 # 2) Go to src/transformers/pipelines/automatic_speech_recognition.py
 # 3) Mmake the following changes:
 #
-# 3a) To run PyTorch FP16: 
+# 3a) To run PyTorch FP16 (CUDA only since PyTorch hasn't implemented "slow_conv2d_cpu" for FP16): 
 # Before:
 # processed = self.feature_extractor(
 #    inputs, sampling_rate=self.feature_extractor.sampling_rate, return_tensors="pt"
