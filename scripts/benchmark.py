@@ -66,13 +66,13 @@ def get_ort(device, directory):
         model = ORTModelForSpeechSeq2Seq.from_pretrained(
             MODEL_NAME, 
             from_transformers=True,
-            use_io_binding=True,
+            use_io_binding=(device == 'cuda'),
         ).to(device)
     else:
         assert os.path.exists(directory)
         model = ORTModelForSpeechSeq2Seq.from_pretrained(
             directory,
-            use_io_binding=True,
+            use_io_binding=(device == 'cuda'),
         ).to(device)
     
     return (processor, model, pipeline)
