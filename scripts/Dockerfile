@@ -17,8 +17,9 @@ RUN apt-get update
 
 # Install necessary software through pip
 RUN pip install torch torchaudio torchvision --pre --extra-index-url https://download.pytorch.org/whl/nightly/cu116
-RUN pip install numpy==1.23.3 transformers optimum onnx coloredlogs psutil py3nvml onnxconverter_common onnxruntime-gpu whisper.ai ffmpeg-python
+RUN pip install transformers optimum onnx coloredlogs psutil py3nvml onnxconverter_common onnxruntime-gpu whisper.ai ffmpeg-python
 RUN pip install --upgrade transformers optimum
+RUN pip install numpy==1.23.3
 
 # Get Whisper repo
 WORKDIR home/

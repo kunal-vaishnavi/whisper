@@ -2,13 +2,13 @@
 # Benchmark Whisper model
 #
 # For up-to-date benchmarking, run this script as follows:
-# python3 whisper_with_ort.py --batch_size <batch-size> --device <device> --engine <engine>
+# python3 benchmark.py --batch_size <batch-size> --device <device> --engine <engine>
 # Append --path <path> for ORT engine, --precision <precision> for PyTorch engine
 #
 # To run PyTorch FP16 and/or PyTorch 2.0:
 # 1) git clone https://github.com/huggingface/transformers && cd transformers
 # 2) Go to src/transformers/pipelines/automatic_speech_recognition.py
-# 3) Mmake the following changes:
+# 3) Make the following changes:
 #
 # 3a) To run PyTorch FP16 (CUDA only since PyTorch hasn't implemented "slow_conv2d_cpu" for FP16): 
 # Before:
@@ -196,10 +196,12 @@ def main():
     process = psutil.Process(pid)
     process.cpu_percent(interval=0.1)
 
-    torch.cuda.synchronize()
+    if args.device == 'cuda':
+        torch.cuda.synchronize()
     start_time = time.time()
     outputs = pipe([audio] * args.batch_size)
-    torch.cuda.synchronize()
+    if args.device == 'cuda':
+        torch.cuda.synchronize()
     end_time = time.time()
     latency = end_time - start_time
     print(f"Batch size = {args.batch_size}, latency = {latency} s, throughput = {args.batch_size / latency} queries/s")
