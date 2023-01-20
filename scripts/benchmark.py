@@ -2,7 +2,7 @@
 # Benchmark Whisper model
 #
 # For up-to-date benchmarking, run this script as follows:
-# python3 benchmark.py --batch_size <batch-size> --device <device> --engine <engine>
+# python3 benchmark.py --batch_size <batch-size> --device <device> --engine <engine> --size <size-of-model>
 # Append --path <path> for ORT engine, --precision <precision> for PyTorch engine
 #
 # To run PyTorch FP16 and/or PyTorch 2.0:
@@ -56,15 +56,14 @@ from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
 from optimum.pipelines import pipeline as ort_pipeline
 from onnxruntime.transformers.benchmark_helper import measure_memory
 
-MODEL_NAME = "openai/whisper-tiny.en"
 
-def get_ort(device, directory):
-    processor = get_preprocessor(MODEL_NAME)
+def get_ort(model_name, device, directory):
+    processor = get_preprocessor(model_name)
     pipeline = lambda *args, **kwargs: ort_pipeline(*args, **kwargs)
     
     if directory is None:
         model = ORTModelForSpeechSeq2Seq.from_pretrained(
-            MODEL_NAME, 
+            model_name, 
             from_transformers=True,
             use_io_binding=(device == 'cuda'),
         ).to(device)
@@ -77,10 +76,10 @@ def get_ort(device, directory):
     
     return (processor, model, pipeline)
 
-def get_torch(device, precision):
-    processor = AutoProcessor.from_pretrained(MODEL_NAME)
+def get_torch(model_name, device, precision):
+    processor = AutoProcessor.from_pretrained(model_name)
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        MODEL_NAME,
+        model_name,
         torch_dtype=(torch.float16 if precision == "fp16" else torch.float32)
     ).to(device)
     pipeline = lambda *args, **kwargs: pt_pipeline(*args, **kwargs)
@@ -88,9 +87,9 @@ def get_torch(device, precision):
 
 def get_vars(args):
     if args.engine == 'ort':
-        return get_ort(args.device, args.path)
+        return get_ort(args.model_name, args.device, args.path)
     if args.engine == 'pt' or args.engine == 'pt2':
-        processor, model, pipeline = get_torch(args.device, args.precision)
+        processor, model, pipeline = get_torch(args.model_name, args.device, args.precision)
         if args.engine == 'pt2':
             model = torch.compile(model)
         return (processor, model, pipeline)
@@ -147,6 +146,15 @@ def parse_args():
     )
 
     parser.add_argument(
+        '-s',
+        '--size',
+        required=False,
+        type=str,
+        default='tiny',
+        choices=['tiny', 'base', 'small', 'medium', 'large'],
+    )
+
+    parser.add_argument(
         '-v',
         '--verbose',
         required=False,
@@ -156,6 +164,7 @@ def parse_args():
     parser.set_defaults(verbose=False)
 
     args = parser.parse_args()
+    setattr(args, 'model_name', f"openai/whisper-{args.size}")
     return args
 
 def main():

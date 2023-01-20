@@ -1,7 +1,7 @@
 #####################################################################
 # Convert Whisper model in ONNX from FP32 to FP16
 #
-# Run script after python3 scripts/whisper_hf_to_onnx.py
+# Run script after python3 scripts/hf_to_onnx.py
 # Run script as python3 scripts/fp32_to_fp16.py -f <path-to-folder>
 #####################################################################
 

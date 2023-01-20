@@ -37,7 +37,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    model_id = f"openai/whisper-{args.size}.en"
+    model_id = f"openai/whisper-{args.size}"
     whisper_model = ORTModelForSpeechSeq2Seq.from_pretrained(
         model_id, 
         from_transformers=True, 

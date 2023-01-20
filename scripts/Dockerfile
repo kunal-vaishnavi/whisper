@@ -27,4 +27,4 @@ RUN git clone ${WHISPER_REPO}
 RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
 
 # Install onnx/tiny/ folder
-RUN cd whisper && python3 scripts/whisper_hf_to_onnx.py -s tiny && python3 scripts/fp32_to_fp16.py
+RUN cd whisper && python3 scripts/hf_to_onnx.py -s tiny && python3 scripts/fp32_to_fp16.py
