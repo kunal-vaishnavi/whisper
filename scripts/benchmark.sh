@@ -137,3 +137,22 @@
 #     --model-size tiny \
 #     --batch-size 2 \
 #     --device cpu \
+
+###################
+# Parity examples:
+###################
+
+# 1) "Whisper with beam search op" from custom export, FP32
+# python3 parity.py \
+#     --audio-path 1272-141231-0002.mp3 \
+#     --original-model wtiny_fp32/openai/whisper-tiny_beamsearch.onnx \
+#     --optimized-model wtiny_opt_fp32/openai/whisper-tiny_beamsearch.onnx \
+#     --device cpu
+
+# 2) "Whisper with beam search op" from custom export, FP32, PyTorch compare
+# python3 parity.py \
+#     --audio-path 1272-141231-0002.mp3 \
+#     --original-model wtiny_fp32/openai/whisper-tiny_beamsearch.onnx \
+#     --optimized-model wtiny_opt_fp32/openai/whisper-tiny_beamsearch.onnx \
+#     --device cpu \
+#     --pt-compare

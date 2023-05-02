@@ -41,6 +41,7 @@ WORKDIR home/
 RUN wget https://raw.githubusercontent.com/microsoft/onnxruntime-extensions/main/tutorials/whisper_e2e.py
 RUN wget https://raw.githubusercontent.com/microsoft/onnxruntime-extensions/main/test/data/1272-141231-0002.mp3
 RUN wget https://raw.githubusercontent.com/kunal-vaishnavi/whisper/ort/scripts/benchmark.py
+RUN wget https://raw.githubusercontent.com/kunal-vaishnavi/whisper/ort/scripts/parity.py
 
 RUN git clone ${WHISPER_ORT_REPO} --branch ${WHISPER_ORT_BRANCH} --single-branch
 RUN git clone ${WHISPER_CPP_REPO} --branch ${WHISPER_CPP_BRANCH} --single-branch

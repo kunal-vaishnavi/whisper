@@ -93,8 +93,12 @@ def get_ort_inputs(args):
         exclude_list = ["input_ids"]
     elif "beamsearch" in args.ort_model_path:
         # Whisper custom export with beam search contrib op
+        audio = whisper.load_audio(args.audio_path)
+        audio = whisper.pad_or_trim(audio)
+        processor = AutoProcessor.from_pretrained(args.model_name)
+        input_features = processor.feature_extractor([audio] * args.batch_size, return_tensors="np").input_features
         ort_inputs = {
-            "input_features": np.random.rand(args.batch_size, args.feature_size, args.encoder_seq_len).astype(np.float32),
+            "input_features": input_features,
             "max_length": np.array([args.max_length], dtype=np.int32),
             "min_length": np.array([args.min_length], dtype=np.int32),
             "num_beams": np.array([args.num_beams], dtype=np.int32),
@@ -136,20 +140,19 @@ def get_hf_inputs(args, processor):
         target_device = f"{args.device}:{args.device_id}" if args.device == "cuda" else args.device
         input_features = processor.feature_extractor([audio] * args.batch_size, return_tensors="pt").input_features
         hf_inputs = {
-            "inputs": input_features.to(args.device),
+            "inputs": input_features.to(target_device),
             "max_length": args.max_length,
             "min_length": args.min_length,
             "num_beams": args.num_beams,
             "num_return_sequences": args.num_return_sequences,
             "length_penalty": args.length_penalty,
             "repetition_penalty": args.repetition_penalty,
-            "attention_mask": torch.zeros((args.batch_size, args.feature_size, args.encoder_seq_len)).to(args.device, dtype=torch.int32),
+            "attention_mask": torch.zeros((args.batch_size, args.feature_size, args.encoder_seq_len)).to(target_device, dtype=torch.int32),
             "no_repeat_ngram_size": args.no_repeat_ngram_size,
             "early_stopping": True,
             "use_cache": True,
         }
-        exclude_list = list(hf_inputs.keys())
-        exclude_list = [key for key in exclude_list if key not in {"inputs"}]
+        exclude_list = [key for key in hf_inputs if key not in {"inputs"}]
     else:
         raise Exception("Could not calculate model inputs")
 
@@ -530,15 +533,13 @@ def parse_args():
     parser.add_argument('--length-penalty', type=float, default=1.0)
     parser.add_argument('--repetition-penalty', type=float, default=1.0)
     parser.add_argument('--no-repeat-ngram-size', type=int, default=3)
-
-    # When skipping pre/post processing and not evaluating E2E (e.g. ORT component-wise),
-    # the following input args can be used:
-
-    # Static inputs:
     parser.add_argument('-f', '--feature-size', type=int, default=80,
                         help="Known as 'feature size' or 'number of Mels'")
     parser.add_argument('-es', '--encoder-seq-len', type=int, default=3000,
                         help="Known as 'encoder sequence length' or 'number of frames'")
+
+    # When skipping pre/post processing and not evaluating E2E (e.g. ORT component-wise),
+    # the following input args can be used:
     
     # Dynamic inputs:
     parser.add_argument('-ds', '--decoder-seq-len', type=int, default=448,
