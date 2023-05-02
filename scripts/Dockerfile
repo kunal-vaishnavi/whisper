@@ -1,8 +1,10 @@
 FROM nvidia/cuda:11.6.2-cudnn8-devel-ubuntu20.04
 
 # Define environment info
-ARG WHISPER_REPO=https://github.com/kunal-vaishnavi/whisper
-ARG WHISPER_BRANCH=ort
+ARG WHISPER_ORT_REPO=https://github.com/kunal-vaishnavi/whisper
+ARG WHISPER_ORT_BRANCH=ort
+ARG WHISPER_CPP_REPO=https://github.com/ggerganov/whisper.cpp
+ARG WHISPER_CPP_BRANCH=master
 ENV PATH=/usr/local/nvidia/bin:${PATH}
 ENV PATH=/usr/local/cuda/bin:${PATH}
 ENV LIBRARY_PATH=/usr/local/cuda/lib64:${LIBRARY_PATH}
@@ -11,20 +13,34 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install necessary software through apt-get
 RUN apt-get update --fix-missing
-RUN apt-get install -y sudo vim git bash python3 python3-dev python3-pip python3-wheel ffmpeg
+RUN apt-get install -y sudo vim git bash wget python3 python3-dev python3-pip python3-wheel ffmpeg
 RUN cd /usr/local/bin && ln -s /usr/bin/python3 python && ln -s /usr/bin/pip3 pip
 RUN apt-get update
 
 # Install necessary software through pip
 RUN pip install torch torchaudio torchvision --pre --extra-index-url https://download.pytorch.org/whl/nightly/cu116
-RUN pip install transformers optimum onnx coloredlogs psutil py3nvml onnxconverter_common onnxruntime-gpu whisper.ai ffmpeg-python
-RUN pip install --upgrade transformers optimum
-RUN pip install numpy==1.23.3
+RUN pip install optimum onnx coloredlogs psutil py3nvml onnxconverter_common ffmpeg-python librosa
+RUN pip install --upgrade optimum
+# Install specific NumPy version to satisfy numba and ORT
+RUN pip install numpy==1.23.5
 
-# Get Whisper repo
+# Install necessary software through pip + git
+RUN pip install git+https://github.com/microsoft/onnxruntime-extensions.git
+RUN pip install git+https://github.com/openai/whisper.git
+# Reinstall transformers from source
+RUN pip uninstall -y transformers
+RUN pip install git+https://github.com/kunal-vaishnavi/transformers.git@ort
+
+# Install ORT
+ARG ORT_WHL=ort_nightly_gpu-1.15.0.dev20230428011-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ADD ${ORT_WHL} .
+RUN pip install ${ORT_WHL}
+
+# Add files to home directory
 WORKDIR home/
-RUN git clone ${WHISPER_REPO}
-RUN cd whisper && git checkout ${WHISPER_BRANCH} && pip install -e .
+RUN wget https://raw.githubusercontent.com/microsoft/onnxruntime-extensions/main/tutorials/whisper_e2e.py
+RUN wget https://raw.githubusercontent.com/microsoft/onnxruntime-extensions/main/test/data/1272-141231-0002.mp3
 
-# Install onnx/tiny/ folder
-RUN cd whisper && python3 scripts/hf_to_onnx.py -s tiny && python3 scripts/fp32_to_fp16.py
+RUN git clone ${WHISPER_ORT_REPO} --branch ${WHISPER_ORT_BRANCH} --single-branch
+RUN git clone ${WHISPER_CPP_REPO} --branch ${WHISPER_CPP_BRANCH} --single-branch
+RUN cd whisper.cpp && make
