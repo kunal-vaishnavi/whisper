@@ -18,9 +18,9 @@ import torch
 import torch.autograd.profiler as profiler
 import whisper
 
+from tqdm import trange
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 from transformers import pipeline as pt_pipeline
-from transformers.onnx.utils import get_preprocessor
 from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
 from optimum.pipelines import pipeline as ort_pipeline
 from onnxruntime.transformers.benchmark_helper import measure_memory
@@ -34,6 +34,7 @@ MODEL_SIZE_INFO = {
     "small": (12, 12, 768),
     "medium": (24, 16, 1024),
     "large": (32, 20, 1280),
+    "large-v2": (32, 20, 1280),
 }
 
 PRECISION = {
@@ -41,6 +42,65 @@ PRECISION = {
     "fp16": (torch.float16, np.float16),
     "int8": (torch.int8, np.int8),
 }
+
+
+# features_type: "" for none, "pt" for PyTorch, or "np" for NumPy
+# load_with: "ffmpeg" for whisper.load_audio, "librosa" for librosa.load, "basic" for using AudioDecoder in ONNX model
+def get_audio(args, load_with="ffmpeg", features_type=""):
+    if features_type != "":
+        assert load_with == "ffmpeg"
+
+    def load_via_ffmpeg():
+        audio = whisper.load_audio(args.audio_path)
+        audio = whisper.pad_or_trim(audio)
+        return audio
+
+    def load_via_librosa():
+        audio = librosa.load(args.audio_path)[0]
+        audio = np.expand_dims(audio[:30 * args.sample_rate], axis=0)
+        return audio
+
+    def load_via_basic():
+        with open(args.audio_path, "rb") as fobj:
+            audio = np.asarray(list(fobj.read()), dtype=np.uint8)
+            audio = np.array([audio] * args.batch_size)
+        return audio
+
+    load_audio = load_via_ffmpeg if load_with == "ffmpeg" else load_via_librosa if load_with == "librosa" else load_via_basic
+
+    if args.device == "cuda":
+        torch.cuda.synchronize()
+    start_time = time.time()
+
+    for _ in trange(args.num_runs):
+        audio = load_audio()
+
+    if args.device == "cuda":
+        torch.cuda.synchronize()
+    end_time = time.time()
+
+    print(f"Load audio: {(end_time - start_time) / args.num_runs} s")
+
+    if features_type == "":
+        return audio
+
+    processor = AutoProcessor.from_pretrained(args.model_name)
+
+    if args.device == "cuda":
+        torch.cuda.synchronize()
+    start_time = time.time()
+    
+    for _ in range(args.num_runs):
+        input_features = processor.feature_extractor([audio] * args.batch_size, return_tensors=features_type).input_features
+    
+    if args.device == "cuda":
+        torch.cuda.synchronize()
+    end_time = time.time()
+
+    print(f"Feature extraction: {(end_time - start_time) / args.num_runs} s")
+
+    return input_features
+
 
 def get_ort_inputs(args):
     if "encoder_model" in args.ort_model_path:
@@ -93,10 +153,7 @@ def get_ort_inputs(args):
         exclude_list = ["input_ids"]
     elif "beamsearch" in args.ort_model_path:
         # Whisper custom export with beam search contrib op
-        audio = whisper.load_audio(args.audio_path)
-        audio = whisper.pad_or_trim(audio)
-        processor = AutoProcessor.from_pretrained(args.model_name)
-        input_features = processor.feature_extractor([audio] * args.batch_size, return_tensors="np").input_features
+        input_features = get_audio(args, load_with="ffmpeg", features_type="np")
         ort_inputs = {
             "input_features": input_features,
             "max_length": np.array([args.max_length], dtype=np.int32),
@@ -108,9 +165,11 @@ def get_ort_inputs(args):
             "attention_mask": np.zeros((args.batch_size, args.feature_size, args.encoder_seq_len)).astype(np.int32),
         }
         exclude_list = list(ort_inputs.keys())
-    elif "all" in args.ort_model_path:
+    elif "all" in args.ort_model_path or "large-v2" in args.ort_model_path:
         # Whisper end-to-end ONNX model
+        audio = get_audio(args, load_with="basic") if args.audio_path != "" else None
         ort_inputs = {
+            "audio_stream": audio,
             "max_length": np.array([args.max_length], dtype=np.int32),
             "min_length": np.array([args.min_length], dtype=np.int32),
             "num_beams": np.array([args.num_beams], dtype=np.int32),
@@ -121,24 +180,20 @@ def get_ort_inputs(args):
         }
         exclude_list = list(ort_inputs.keys())
     else:
-        raise Exception("Unable to auto-detect inputs for provided component")
+        raise Exception("Unable to auto-detect inputs for provided model")
 
     return set_inputs(args, ort_inputs, exclude_list)
 
 
 def get_hf_inputs(args, processor):
-    audio = whisper.load_audio(args.audio_path)
-    audio = whisper.pad_or_trim(audio)
-
     if args.hf_api == "pipeline":
         # Only the audio is needed for inputs
+        audio = get_audio(args, load_with="ffmpeg")
         hf_inputs = {"audio": audio}
         exclude_list = ["audio"]
     elif args.hf_api == "gen-and-dec":
-        # This is the case when hf_api == "gen-and-dec" and benchmark_type in {"HF + PT", "HF + PT2"}
-        assert(args.benchmark_type in {"HF + PT", "HF + PT2"})
         target_device = f"{args.device}:{args.device_id}" if args.device == "cuda" else args.device
-        input_features = processor.feature_extractor([audio] * args.batch_size, return_tensors="pt").input_features
+        input_features = get_audio(args, load_with="ffmpeg", features_type="pt")
         hf_inputs = {
             "inputs": input_features.to(target_device),
             "max_length": args.max_length,
@@ -147,7 +202,6 @@ def get_hf_inputs(args, processor):
             "num_return_sequences": args.num_return_sequences,
             "length_penalty": args.length_penalty,
             "repetition_penalty": args.repetition_penalty,
-            "attention_mask": torch.zeros((args.batch_size, args.feature_size, args.encoder_seq_len)).to(target_device, dtype=torch.int32),
             "no_repeat_ngram_size": args.no_repeat_ngram_size,
             "early_stopping": True,
             "use_cache": True,
@@ -179,22 +233,17 @@ def get_vars(args):
         processor, model, pipeline = get_hf_pt(args)
     elif args.benchmark_type == "HF + ORT":
         processor, model, pipeline = get_hf_ort(args)
-        if args.hf_api == "gen-and-dec":
-            model = get_ort_model(args)
     elif args.benchmark_type == "ORT":
         model = get_ort_model(args)
     else:
         raise Exception("Invalid benchmark type provided")
 
     # Get inputs
-    if args.benchmark_type == "ORT" or (args.benchmark_type == "HF + ORT" and args.hf_api == "gen-and-dec"):
+    if args.benchmark_type == "ORT":
         inputs = get_ort_inputs(args)
-        if "audio_stream" in list(map(lambda model_input: model_input.name, model.get_inputs())):
-            # Update only if 'audio' input is in model
-            audio = librosa.load(args.audio_path)[0]
-            audio = np.expand_dims(audio[:30 * args.sample_rate], axis=0)
-            audio = audio.astype(np.uint8)
-            inputs.update({"audio_stream": audio})
+        if "audio_stream" not in set(map(lambda model_input: model_input.name, model.get_inputs())):
+            # Remove when 'audio' input is not in model
+            del inputs["audio_stream"]
     else:
         inputs = get_hf_inputs(args, processor)
         if args.hf_api == "pipeline":
@@ -205,7 +254,7 @@ def get_vars(args):
 
 def get_hf_pt(args):
     processor = AutoProcessor.from_pretrained(args.model_name)
-    torch_dtype = PRECISION[args.precision][0]
+    torch_dtype = PRECISION[args.precision][0] if args.precision != "int8" else PRECISION["fp32"][0]
     target_device = f"{args.device}:{args.device_id}" if args.device == "cuda" else args.device
 
     if args.hf_pt_model_path == "":
@@ -237,12 +286,7 @@ def get_hf_pt(args):
 
 
 def get_hf_ort(args):
-    processor = get_preprocessor(args.model_name)
-    model, pipeline = None, None
-    if args.hf_api == "gen-and-dec":
-        # Model will be loaded from ORT, pipeline is not needed
-        return processor, model, pipeline
-
+    processor = AutoProcessor.from_pretrained(args.model_name)
     torch_dtype = PRECISION[args.precision][0]
     target_device = f"{args.device}:{args.device_id}" if args.device == "cuda" else args.device
 
@@ -316,7 +360,7 @@ def run_hf_pipeline_inference(args, audio, pipe):
             # Filename format example: "hf_pt2_pipeline_<current-time>.txt"
             filename = f"{args.benchmark_type.lower().replace(' + ', '_')}_pipeline_{datetime.datetime.now():%Y-%m-%d_%H:%M:%S}"
             fobj = open(filename, 'w')
-            fobj.write(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total', row_limit=1000))
+            fobj.write(prof.key_averages(group_by_stack_n=5).table(sort_by=args.pt_filter_by, row_limit=args.pt_num_rows))
             fobj.close()
 
         # Measure CPU usage
@@ -347,8 +391,8 @@ def run_hf_pipeline_inference(args, audio, pipe):
         torch.cuda.synchronize()
     start_time = time.time()
 
-    for _ in range(args.num_runs):
-        outputs = pipe([audio] * args.batch_size)
+    for _ in trange(args.num_runs):
+        pipe([audio] * args.batch_size)
     
     if args.device == "cuda":
         torch.cuda.synchronize()
@@ -360,19 +404,9 @@ def run_hf_pipeline_inference(args, audio, pipe):
 
 # Benchmark types: HF + PT, HF + PT2, HF + ORT
 def run_hf_generate_and_decode_inference(args, inputs, processor, model):
-    def ort_gen_and_dec():
-        # HF + ORT
-        predicted_ids = model.run(None, inputs)[0]
-        transcription = []
-        for bs in range(args.batch_size):
-            for rs in range(args.num_return_sequences):
-                transcription.append(
-                    processor.batch_decode(predicted_ids[bs][rs], skip_special_tokens=True)[0]
-                )
-        return transcription
-
-    def pt_gen_and_dec():
-        # HF + PT, HF + PT2
+    def gen_and_dec():
+        # HF + PT, HF + PT2, HF + ORT
+        # HF + ORT works with latest optimum version
         predicted_ids = model.generate(**inputs)
         transcription = []
         for bs in range(args.batch_size):
@@ -380,9 +414,6 @@ def run_hf_generate_and_decode_inference(args, inputs, processor, model):
                 transcription.append(
                     processor.batch_decode(predicted_ids[bs * args.num_return_sequences + rs], skip_special_tokens=True)[0]
                 )
-        return transcription
-
-    gen_and_dec = ort_gen_and_dec if args.benchmark_type == "HF + ORT" else pt_gen_and_dec
 
     if args.profile:
         with profiler.profile(with_stack=True, profile_memory=True) as prof:
@@ -390,7 +421,7 @@ def run_hf_generate_and_decode_inference(args, inputs, processor, model):
             # Filename format example: "hf_pt2_gen_and_dec_<current-time>.txt"
             filename = f"{args.benchmark_type.lower().replace(' + ', '_')}_gen_and_dec_{datetime.datetime.now():%Y-%m-%d_%H:%M:%S}"
             fobj = open(filename, 'w')
-            fobj.write(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total', row_limit=1000))
+            fobj.write(prof.key_averages(group_by_stack_n=5).table(sort_by=args.pt_filter_by, row_limit=args.pt_num_rows))
             fobj.close()
 
         # Measure CPU usage
@@ -421,7 +452,7 @@ def run_hf_generate_and_decode_inference(args, inputs, processor, model):
         torch.cuda.synchronize()
     start_time = time.time()
 
-    for _ in range(args.num_runs):
+    for _ in trange(args.num_runs):
         gen_and_dec()
 
     if args.device == "cuda":
@@ -499,7 +530,7 @@ def parse_args():
 
 
     # Args for audio file and batch size
-    parser.add_argument('-a', '--audio-path', type=str,
+    parser.add_argument('-a', '--audio-path', type=str, default="",
                         help="Path to audio file for E2E evaluation")
     parser.add_argument('--long-audio', default=False, action='store_true',
                         help="Whether the audio file is longer than 30s")
@@ -508,7 +539,7 @@ def parse_args():
 
     # Args for choosing the model
     parser.add_argument('-s', '--model-size', required=True, type=str, default='tiny',
-                        choices=['tiny', 'base', 'small', 'medium', 'large'])
+                        choices=['tiny', 'base', 'small', 'medium', 'large', 'large-v2'])
     parser.add_argument('-p', '--precision', required=True, type=str, default='fp32',
                         choices=['int8', 'fp16', 'fp32'],
                         help="Precision for model and inputs. For PyTorch models, this sets the model's precision. \
@@ -562,6 +593,10 @@ def parse_args():
     # Args for accessing detailed info
     parser.add_argument('--profile', default=False, action='store_true',
                         help="Whether to profile the model (e.g. CPU usage, memory footprint)")
+    parser.add_argument('--pt-filter-by', default="self_cpu_time_total",
+                        help="What to filter PyTorch profiler by")
+    parser.add_argument('--pt-num-rows', default=1000,
+                        help="Number of rows for PyTorch profiler to display")
     parser.add_argument('--verbose', default=False, action='store_true',
                         help="Whether to print information (e.g. outputs, verifications)")
 

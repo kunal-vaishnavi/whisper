@@ -32,9 +32,12 @@ RUN pip uninstall -y transformers
 RUN pip install git+https://github.com/kunal-vaishnavi/transformers.git@ort
 
 # Install ORT
-ARG ORT_WHL=ort_nightly_gpu-1.15.0.dev20230428011-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ARG ORT_WHL=ort_nightly_gpu-1.16.0.dev20230516003-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 ADD ${ORT_WHL} .
 RUN pip install ${ORT_WHL}
+
+# RUN pip install --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ ort-nightly
+# RUN pip install --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ onnxruntime-extensions
 
 # Add files to home directory
 WORKDIR home/

@@ -2,7 +2,7 @@
 
 #########################
 # Starting Docker image:
-# docker run --gpus all -it kunalva/whisper_bench:latest
+# docker run --rm --gpus all -it kunalva/whisper_bench:latest
 #########################
 
 ################
@@ -63,7 +63,6 @@
 # python3 benchmark.py \
 #     --benchmark-type "HF + ORT" \
 #     --hf-api gen-and-dec \
-#     --ort-model-path wtiny_fp32/openai/whisper-tiny_beamsearch.onnx
 #     --audio-path whisper/tests/jfk.flac \
 #     --precision fp32 \
 #     --model-size tiny \
