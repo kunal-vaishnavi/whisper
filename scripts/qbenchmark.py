@@ -7,8 +7,7 @@ def measure(args):
     model = whisper.load_model(args.size)
     qmodel = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, torch.qint8).to("cpu")
     qmodel = qmodel if args.no_compile else torch.compile(qmodel)
-
-    options = whisper.DecodingOptions(beam_size=args.beam_size, fp16=True)
+    options = whisper.DecodingOptions(beam_size=args.beam_size, fp16=not args.no_fp16)
 
     audio = None
     start_time = time.time()
@@ -46,6 +45,7 @@ def main():
     parser.add_argument("--no-compile", action="store_true", help="Turn off torch.compile(model)")
     parser.set_defaults(no_compile=False)
     parser.add_argument("--no-fp16", action="store_true", help="Turn off FP16 ")
+    parser.set_defaults(no_fp16=False)
 
 if __name__ == "__main__":
     main()
