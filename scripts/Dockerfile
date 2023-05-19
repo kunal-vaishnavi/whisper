@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.6.2-cudnn8-devel-ubuntu20.04
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04
 
 # Define environment info
 ARG WHISPER_ORT_REPO=https://github.com/kunal-vaishnavi/whisper
@@ -18,26 +18,27 @@ RUN cd /usr/local/bin && ln -s /usr/bin/python3 python && ln -s /usr/bin/pip3 pi
 RUN apt-get update
 
 # Install necessary software through pip
-RUN pip install torch torchaudio torchvision --pre --extra-index-url https://download.pytorch.org/whl/nightly/cu116
+RUN pip install --pre torch torchaudio torchvision --index-url https://download.pytorch.org/whl/nightly/cu118
 RUN pip install optimum onnx coloredlogs psutil py3nvml onnxconverter_common ffmpeg-python librosa
 RUN pip install --upgrade optimum
 # Install specific NumPy version to satisfy numba and ORT
 RUN pip install numpy==1.23.5
 
 # Install necessary software through pip + git
-RUN pip install git+https://github.com/microsoft/onnxruntime-extensions.git
 RUN pip install git+https://github.com/openai/whisper.git
 # Reinstall transformers from source
 RUN pip uninstall -y transformers
 RUN pip install git+https://github.com/kunal-vaishnavi/transformers.git@ort
 
 # Install ORT
-ARG ORT_WHL=ort_nightly_gpu-1.16.0.dev20230516003-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ARG ORT_WHL=ort_nightly_gpu-1.16.0.dev20230518004-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 ADD ${ORT_WHL} .
 RUN pip install ${ORT_WHL}
 
-# RUN pip install --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ ort-nightly
-# RUN pip install --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ onnxruntime-extensions
+# Install ORT extensions
+ARG ORT_EXT_WHL=onnxruntime_extensions-0.8.0+117b038-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ADD ${ORT_EXT_WHL} .
+RUN pip install ${ORT_EXT_WHL}
 
 # Add files to home directory
 WORKDIR home/

@@ -241,7 +241,7 @@ def get_vars(args):
     # Get inputs
     if args.benchmark_type == "ORT":
         inputs = get_ort_inputs(args)
-        if "audio_stream" not in set(map(lambda model_input: model_input.name, model.get_inputs())):
+        if "audio_stream" not in set(map(lambda model_input: model_input.name, model.get_inputs())) and "audio_stream" in inputs:
             # Remove when 'audio' input is not in model
             del inputs["audio_stream"]
     else:
@@ -593,9 +593,9 @@ def parse_args():
     # Args for accessing detailed info
     parser.add_argument('--profile', default=False, action='store_true',
                         help="Whether to profile the model (e.g. CPU usage, memory footprint)")
-    parser.add_argument('--pt-filter-by', default="self_cpu_time_total",
+    parser.add_argument('--pt-filter-by', type=str, default="self_cpu_time_total",
                         help="What to filter PyTorch profiler by")
-    parser.add_argument('--pt-num-rows', default=1000,
+    parser.add_argument('--pt-num-rows', type=int, default=1000,
                         help="Number of rows for PyTorch profiler to display")
     parser.add_argument('--verbose', default=False, action='store_true',
                         help="Whether to print information (e.g. outputs, verifications)")
