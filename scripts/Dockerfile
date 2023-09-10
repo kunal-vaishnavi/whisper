@@ -1,8 +1,6 @@
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04
 
 # Define environment info
-ARG WHISPER_ORT_REPO=https://github.com/kunal-vaishnavi/whisper
-ARG WHISPER_ORT_BRANCH=ort
 ARG WHISPER_CPP_REPO=https://github.com/ggerganov/whisper.cpp
 ARG WHISPER_CPP_BRANCH=master
 ENV PATH=/usr/local/nvidia/bin:${PATH}
@@ -20,33 +18,23 @@ RUN apt-get update
 # Install necessary software through pip
 RUN pip install --pre torch torchaudio torchvision --index-url https://download.pytorch.org/whl/nightly/cu118
 RUN pip install optimum onnx coloredlogs psutil py3nvml onnxconverter_common ffmpeg-python librosa
-RUN pip install --upgrade optimum
-# Install specific NumPy version to satisfy numba and ORT
-RUN pip install numpy==1.23.5
+
+# Install nightly ORT
+ARG ORT_VERSION=1.16.0.dev20230901001
+RUN pip install ort-nightly-gpu=={ORT_VERSION} --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/
 
 # Install necessary software through pip + git
 RUN pip install git+https://github.com/openai/whisper.git
-# Reinstall transformers from source
-RUN pip uninstall -y transformers
-RUN pip install git+https://github.com/kunal-vaishnavi/transformers.git@ort
+RUN pip install git+https://github.com/microsoft/onnxruntime-extensions.git
+RUN pip uninstall -y transformers && pip install git+https://github.com/kunal-vaishnavi/transformers.git@ort
 
-# Install ORT
-ARG ORT_WHL=ort_nightly_gpu-1.16.0.dev20230518004-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-ADD ${ORT_WHL} .
-RUN pip install ${ORT_WHL}
-
-# Install ORT extensions
-ARG ORT_EXT_WHL=onnxruntime_extensions-0.8.0+117b038-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-ADD ${ORT_EXT_WHL} .
-RUN pip install ${ORT_EXT_WHL}
+# Install specific NumPy version to satisfy numba and ORT
+RUN pip uninstall -y numpy && pip install numpy==1.23.5
 
 # Add files to home directory
 WORKDIR home/
 RUN wget https://raw.githubusercontent.com/microsoft/onnxruntime-extensions/main/tutorials/whisper_e2e.py
 RUN wget https://raw.githubusercontent.com/microsoft/onnxruntime-extensions/main/test/data/1272-141231-0002.mp3
-RUN wget https://raw.githubusercontent.com/kunal-vaishnavi/whisper/ort/scripts/benchmark.py
-RUN wget https://raw.githubusercontent.com/kunal-vaishnavi/whisper/ort/scripts/parity.py
 
-RUN git clone ${WHISPER_ORT_REPO} --branch ${WHISPER_ORT_BRANCH} --single-branch
 RUN git clone ${WHISPER_CPP_REPO} --branch ${WHISPER_CPP_BRANCH} --single-branch
 RUN cd whisper.cpp && make
