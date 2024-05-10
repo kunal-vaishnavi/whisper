@@ -727,7 +727,29 @@ class DecodingTask:
             generator.compute_logits()
             generator.generate_next_token()
 
-        tokens = generator.get_sequence(0)
+            # Psuedocode
+            generator.compute_logits() # actual FW pass
+            logits = generator.get_logits()  # (Batch x Num_Beams x Vocab_Size)
+
+            ## CUSTOM SCORING HERE, phase 1: on CPU, phase 2: on GPU e.g. via triton kernel (no data movement)
+
+            #NOTE: all indicies below are BatchXBeams, so entries are flatted acros batch
+            #Alt1:
+            # we considered 5 beams: B0, B1, B2, B3, B4, 
+            generator.add_hypothesis(3, 1.23) # Beam 3 ends in EOS with high prob, add it to hypothesis with this score, so later we selelct best from these.
+
+            geneator.generate_next_along_path([3,3,3,4,4], [5012, 20, 123 ,5,23], scores), #per path to pursue: beamIdx, vocabId, score. vocabId should never be EOS. Max len Batchx Beams
+
+            #ALt 2:
+            geneator.generate_next_along_path([3, 3,3,3,4,4], [EOS, 5012, 20, 123 ,5,23], scores), #per path to pursue: beamIdx, vocabId, score. vocabId CAN be EOS. Max length for this array is batch x 2x num_Beams. Must be at least NumBeams NON EOS tokens.
+            #Open questions:
+            #- How could repetition pelanty be applied? Custom impl?
+                #- Today existing constraints like rep penaltiy, min seq len are applied in compute_logits()
+            # - How to update logits in place and have genAI do softmax and continue? Need generated.updated_logits()?
+            # - For generate_next_along_path, caller is responsible for runnign osftmax
+
+
+
 
             # for i in range(self.sample_len):
             #     logits = self.inference.logits(tokens, audio_features)
