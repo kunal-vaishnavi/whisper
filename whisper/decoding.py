@@ -132,8 +132,8 @@ class DecodingOptions:
 
 @dataclass(frozen=True)
 class DecodingResult:
-    audio_features: Tensor
-    language: str
+    # audio_features: Tensor
+    # language: str
     language_probs: Optional[Dict[str, float]] = None
     tokens: List[int] = field(default_factory=list)
     text: str = ""
@@ -534,8 +534,13 @@ class DecodingTask:
         num_languages: int,
         n_text_ctx: int,
         n_audio_ctx: int,
+        n_vocab: int,
         options: DecodingOptions,
     ):
+        self.is_multilingual = is_multilingual
+        self.num_languages = num_languages
+        self.n_vocab = n_vocab
+
         self.model = model
 
         language = options.language or "en"
@@ -564,16 +569,16 @@ class DecodingTask:
         # # inference: implements the forward pass through the decoder, including kv caching
         # self.inference = PyTorchInference(model, len(self.initial_tokens))
 
-        # # sequence ranker: implements how to rank a group of sampled sequences
-        # self.sequence_ranker = MaximumLikelihoodRanker(options.length_penalty)
+        # sequence ranker: implements how to rank a group of sampled sequences
+        self.sequence_ranker = MaximumLikelihoodRanker(options.length_penalty)
 
-        # # decoder: implements how to select the next tokens, given the autoregressive distribution
-        # if options.beam_size is not None:
-        #     self.decoder = BeamSearchDecoder(
-        #         options.beam_size, tokenizer.eot, self.inference, options.patience
-        #     )
-        # else:
-        #     self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
+        # decoder: implements how to select the next tokens, given the autoregressive distribution
+        if options.beam_size is not None:
+            self.decoder = BeamSearchDecoder(
+                options.beam_size, tokenizer.eot, None, options.patience
+            )
+        else:
+            self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
 
         # logit filters: applies various rules to suppress or penalize certain tokens
         self.logit_filters = []
@@ -693,9 +698,10 @@ class DecodingTask:
         lang_probs = None
 
         if self.options.language is None or self.options.task == "lang_id":
-            lang_tokens, lang_probs = self.model.detect_language(
-                audio_features, self.tokenizer
-            )
+            # lang_tokens, lang_probs = self.model.detect_language(
+            #     audio_features, self.tokenizer
+            # )
+            lang_tokens, lang_probs = detect_language(self.model, audio_features, self.n_vocab, self.is_multilingual, self.num_languages)
             languages = [max(probs, key=probs.get) for probs in lang_probs]
             if self.options.language is None:
                 tokens[:, self.sot_index + 1] = lang_tokens  # write language tokens
@@ -793,7 +799,14 @@ class DecodingTask:
         sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
 
         # get the final candidates for each group, and slice between the first sampled token and EOT
-        tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+        # tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+
+        # Run greedy search
+        # make sure each sequence has at least one EOT token at the end
+        tokens = torch.from_numpy(tokens)
+        tokens = F.pad(tokens, (0, 1), value=tokenizer.eot)
+        tokens, sum_logprobs = tokens, sum_logprobs.tolist()
+
         tokens: List[List[Tensor]] = [
             [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
             for s in tokens
@@ -811,7 +824,7 @@ class DecodingTask:
 
         fields = (
             texts,
-            languages,
+            # languages,
             tokens,
             # audio_features,
             avg_logprobs,
@@ -823,7 +836,7 @@ class DecodingTask:
         return [
             DecodingResult(
                 # audio_features=features,
-                language=language,
+                # language=language,
                 tokens=tokens,
                 text=text,
                 avg_logprob=avg_logprob,
@@ -831,7 +844,7 @@ class DecodingTask:
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(text),
             )
-            for text, language, tokens, avg_logprob, no_speech_prob in zip(
+            for text, tokens, avg_logprob, no_speech_prob in zip(
             # for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
                 *fields
             )
@@ -846,6 +859,7 @@ def decode(
     num_languages: int,
     n_text_ctx: int,
     n_audio_ctx: int,
+    n_vocab: int,
     options: DecodingOptions = DecodingOptions(),
     **kwargs,
 ) -> Union[DecodingResult, List[DecodingResult]]:
@@ -874,6 +888,6 @@ def decode(
     if kwargs:
         options = replace(options, **kwargs)
 
-    result = DecodingTask(model, is_multilingual, num_languages, n_text_ctx, n_audio_ctx, options).run(mel)
+    result = DecodingTask(model, is_multilingual, num_languages, n_text_ctx, n_audio_ctx, n_vocab, options).run(mel)
 
     return result[0] if single else result
