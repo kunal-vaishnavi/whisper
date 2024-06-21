@@ -153,14 +153,14 @@ def transcribe(
                     "Detecting language using up to the first 30 seconds. Use `--language` to specify the language"
                 )
             mel_segment = pad_or_trim(mel, N_FRAMES).to(device).to(dtype)
-            _, probs = detect_language(model, mel_segment, n_vocab, is_multilingual, num_languages)
-            decode_options["language"] = max(probs, key=probs.get)
-            if verbose is not None:
-                print(
-                    f"Detected language: {LANGUAGES[decode_options['language']].title()}"
-                )
+            # _, probs = detect_language(model, mel_segment, n_vocab, is_multilingual, num_languages)
+            # decode_options["language"] = max(probs, key=probs.get)
+            # if verbose is not None:
+            #     print(
+            #         f"Detected language: {LANGUAGES[decode_options['language']].title()}"
+            #     )
 
-    language: str = decode_options["language"]
+    language: str = decode_options.get("language", "english")
     task: str = decode_options.get("task", "transcribe")
     tokenizer = get_tokenizer(
         is_multilingual,

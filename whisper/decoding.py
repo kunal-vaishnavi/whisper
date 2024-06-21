@@ -713,7 +713,7 @@ class DecodingTask:
         sum_logprobs: Tensor = torch.zeros(n_batch)
         no_speech_probs = [np.nan] * n_batch
 
-        # og.set_log_options(enabled=True, model_input_values=True, model_output_shapes=True)
+        og.set_log_options(enabled=True, model_input_values=True, model_output_values=True)
         n_vocab = 51865
         params = og.GeneratorParams(self.model)
         # params.set_search_options(num_beams=self.n_group)
