@@ -64,13 +64,13 @@ def detect_language(
 
     # og.set_log_options(enabled=True, model_input_values=True, model_output_shapes=True)
     params = og.GeneratorParams(model)
-    params.whisper_input_features = mel.detach().cpu().numpy()
-    params.input_ids = x.detach().cpu().numpy()
+    params.whisper_input_features = mel.detach().cpu().numpy().astype(np.float16)
+    params.input_ids = x.detach().cpu().numpy().astype(np.int32)
 
     # logits = model.logits(x, mel)[:, 0]
     generator = og.Generator(model, params)
     generator.compute_logits()
-    logits = torch.from_numpy(generator.get_logits()).reshape(n_audio, -1, n_vocab)[:, 0]
+    logits = torch.from_numpy(generator.get_output('logits')).reshape(n_audio, -1, n_vocab)[:, 0]
 
     # collect detected languages; suppress all non-language tokens
     mask = torch.ones(logits.shape[-1], dtype=torch.bool)
@@ -717,12 +717,12 @@ class DecodingTask:
         n_vocab = 51865
         params = og.GeneratorParams(self.model)
         # params.set_search_options(num_beams=self.n_group)
-        params.whisper_input_features = mel.detach().cpu().numpy()
-        params.input_ids = tokens.detach().cpu().numpy()
+        params.whisper_input_features = mel.detach().cpu().numpy().astype(np.float16)
+        params.input_ids = tokens.detach().cpu().numpy().astype(np.int32)
 
         generator = og.Generator(self.model, params)
         generator.compute_logits()
-        logits = torch.from_numpy(generator.get_logits()).reshape(n_batch, -1, n_vocab)#[:, 0]
+        logits = torch.from_numpy(generator.get_output('logits')).reshape(n_batch, -1, n_vocab)#[:, 0]
 
         probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
         no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
@@ -732,6 +732,7 @@ class DecodingTask:
         while not generator.is_done():
             generator.compute_logits()
             generator.generate_next_token()
+            # break
 
         tokens = generator.get_sequence(0)
 

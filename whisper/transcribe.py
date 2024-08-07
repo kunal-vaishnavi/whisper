@@ -203,6 +203,7 @@ def transcribe(
 
             options = DecodingOptions(**kwargs, temperature=t)
             decode_result = decode(model, segment, is_multilingual, num_languages, n_text_ctx, n_audio_ctx, n_vocab, options)
+            return decode_result
 
             needs_fallback = False
             if (
@@ -585,7 +586,10 @@ def cli():
     from base import load_model
 
     # os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-    model = og.Model("/workspace/kvaishnavi/whisper/wtiny-hf-fp16-cross-qk")
+    os.environ["ORT_DISABLE_FLASH_ATTENTION"] = "1"
+    os.environ["ORT_DISABLE_TRT_FLASH_ATTENTION"] = "1"
+    os.environ["ORT_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
+    model = og.Model("/datadisks/disk3/kvaishnavi/whisper/wtiny-fp16-dmmha")
     params = None
     # params = og.GeneratorParams(model)
     # params.set_search_options(num_beams=args["beam_size"], length_penalty=args["length_penalty"])
