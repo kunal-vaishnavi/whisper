@@ -141,6 +141,7 @@ class DecodingResult:
     no_speech_prob: float = np.nan
     temperature: float = np.nan
     compression_ratio: float = np.nan
+    cross_qk: Optional[torch.Tensor] = None
 
 
 class Inference:
@@ -713,12 +714,13 @@ class DecodingTask:
         sum_logprobs: Tensor = torch.zeros(n_batch)
         no_speech_probs = [np.nan] * n_batch
 
-        og.set_log_options(enabled=True, model_input_values=True, model_output_values=True)
+        # og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
         n_vocab = 51865
         params = og.GeneratorParams(self.model)
         # params.set_search_options(num_beams=self.n_group)
         params.whisper_input_features = mel.detach().cpu().numpy().astype(np.float16)
         params.input_ids = tokens.detach().cpu().numpy().astype(np.int32)
+        params.alignment_heads = np.array([[2, 2], [3, 0], [3, 2], [3, 3], [3, 4], [3, 5]]).astype(np.int32)  # for whisper-tiny
 
         generator = og.Generator(self.model, params)
         generator.compute_logits()
@@ -735,6 +737,7 @@ class DecodingTask:
             # break
 
         tokens = generator.get_sequence(0)
+        cross_qks = torch.from_numpy(generator.get_output("cross_qk"))
 
             # for i in range(self.sample_len):
             #     logits = self.inference.logits(tokens, audio_features)
@@ -760,7 +763,7 @@ class DecodingTask:
         # finally:
         #     self.inference.cleanup_caching()
 
-        return tokens, sum_logprobs, no_speech_probs
+        return tokens, sum_logprobs, no_speech_probs, cross_qks
 
     @torch.no_grad()
     def run(self, mel: Tensor) -> List[DecodingResult]:
@@ -788,7 +791,7 @@ class DecodingTask:
         # tokens = tokens.repeat_interleave(self.n_group, dim=0).to(device)
 
         # call the main sampling loop
-        tokens, sum_logprobs, no_speech_probs = self._main_loop(mel, tokens)
+        tokens, sum_logprobs, no_speech_probs, cross_qks = self._main_loop(mel, tokens)
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         # audio_features = audio_features[:: self.n_group]
@@ -796,6 +799,7 @@ class DecodingTask:
         # assert audio_features.shape[0] == len(no_speech_probs) == n_audio
 
         print(tokens)
+        print(cross_qks)
         tokens = tokens.reshape(n_audio, self.n_group, -1)
         sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
 
@@ -830,6 +834,7 @@ class DecodingTask:
             # audio_features,
             avg_logprobs,
             no_speech_probs,
+            cross_qks,
         )
         if len(set(map(len, fields))) != 1:
             raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
@@ -844,8 +849,9 @@ class DecodingTask:
                 no_speech_prob=no_speech_prob,
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(text),
+                cross_qk=cross_qk.to("cuda"),
             )
-            for text, tokens, avg_logprob, no_speech_prob in zip(
+            for text, tokens, avg_logprob, no_speech_prob, cross_qk in zip(
             # for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
                 *fields
             )

@@ -397,6 +397,7 @@ def transcribe(
                 add_word_timestamps(
                     segments=current_segments,
                     model=model,
+                    cross_qk=result.cross_qk,
                     tokenizer=tokenizer,
                     mel=mel_segment,
                     num_frames=segment_size,
@@ -586,10 +587,13 @@ def cli():
     from base import load_model
 
     # os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-    os.environ["ORT_DISABLE_FLASH_ATTENTION"] = "1"
-    os.environ["ORT_DISABLE_TRT_FLASH_ATTENTION"] = "1"
-    os.environ["ORT_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
-    model = og.Model("/datadisks/disk3/kvaishnavi/whisper/wtiny-fp16-dmmha")
+    # os.environ["ORT_DISABLE_FLASH_ATTENTION"] = "1"
+    # os.environ["ORT_DISABLE_TRT_FLASH_ATTENTION"] = "1"
+    # os.environ["ORT_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
+
+    model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp16-dmmha")
+    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp32")
+    
     params = None
     # params = og.GeneratorParams(model)
     # params.set_search_options(num_beams=args["beam_size"], length_penalty=args["length_penalty"])

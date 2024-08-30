@@ -15,6 +15,7 @@ from tokenizer import Tokenizer
 if TYPE_CHECKING:
     from model import Whisper
 
+import onnxruntime_genai as og
 
 def median_filter(x: torch.Tensor, filter_width: int):
     """Apply a median filter of width `filter_width` along the last dimension of `x`"""
@@ -161,7 +162,8 @@ class WordTiming:
 
 
 def find_alignment(
-    model: "Whisper",
+    model: og.Model,
+    cross_qk: torch.Tensor,
     tokenizer: Tokenizer,
     text_tokens: List[int],
     mel: torch.Tensor,
@@ -180,37 +182,59 @@ def find_alignment(
             *text_tokens,
             tokenizer.eot,
         ]
-    ).to(model.device)
+    ).to("cuda")
 
-    # install hooks on the cross attention layers to retrieve the attention weights
-    QKs = [None] * model.dims.n_text_layer
-    hooks = [
-        block.cross_attn.register_forward_hook(
-            lambda _, ins, outs, index=i: QKs.__setitem__(index, outs[-1][0])
-        )
-        for i, block in enumerate(model.decoder.blocks)
-    ]
+    # # install hooks on the cross attention layers to retrieve the attention weights
+    # QKs = [None] * model.dims.n_text_layer
+    # hooks = [
+    #     block.cross_attn.register_forward_hook(
+    #         lambda _, ins, outs, index=i: QKs.__setitem__(index, outs[-1][0])
+    #     )
+    #     for i, block in enumerate(model.decoder.blocks)
+    # ]
 
-    with torch.no_grad():
-        logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
-        sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
-        token_probs = sampled_logits.softmax(dim=-1)
-        text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
-        text_token_probs = text_token_probs.tolist()
+    # with torch.no_grad():
+    #     logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
+    #     sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
+    #     token_probs = sampled_logits.softmax(dim=-1)
+    #     text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
+    #     text_token_probs = text_token_probs.tolist()
 
-    for hook in hooks:
-        hook.remove()
+    if single := mel.ndim == 2:
+        mel = mel.unsqueeze(0)
+
+    # og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
+    n_vocab = 51865
+    params = og.GeneratorParams(model)
+    # params.set_search_options(num_beams=self.n_group)
+    params.whisper_input_features = mel.detach().cpu().numpy().astype(np.float16)
+    params.input_ids = tokens.detach().cpu().numpy().astype(np.int32)
+    params.alignment_heads = np.array([[2, 2], [3, 0], [3, 2], [3, 3], [3, 4], [3, 5]]).astype(np.int32)  # for whisper-tiny
+
+    generator = og.Generator(model, params)
+    generator.compute_logits()
+    logits = torch.from_numpy(generator.get_output('logits')).view(-1, n_vocab)
+    # print(logits.shape)
+    sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
+    token_probs = sampled_logits.softmax(dim=-1)
+    text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
+    text_token_probs = text_token_probs.tolist()
+
+    # for hook in hooks:
+    #     hook.remove()
 
     # heads * tokens * frames
-    weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
-    weights = weights[:, :, : num_frames // 2]
+    # weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
+    # weights = weights[:, :, : num_frames // 2]
+    weights = cross_qk.reshape([-1, *cross_qk.shape[2:]])
     weights = (weights * qk_scale).softmax(dim=-1)
     std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
     weights = (weights - mean) / std
     weights = median_filter(weights, medfilt_width)
 
     matrix = weights.mean(axis=0)
-    matrix = matrix[len(tokenizer.sot_sequence) : -1]
+    matrix = matrix[:, len(tokenizer.sot_sequence) : -1]
+    # print(f"Matrix: {matrix.shape}")
     text_indices, time_indices = dtw(-matrix)
 
     words, word_tokens = tokenizer.split_to_word_tokens(text_tokens + [tokenizer.eot])
@@ -277,7 +301,8 @@ def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: st
 def add_word_timestamps(
     *,
     segments: List[dict],
-    model: "Whisper",
+    model: og.Model,
+    cross_qk: torch.Tensor,
     tokenizer: Tokenizer,
     mel: torch.Tensor,
     num_frames: int,
@@ -295,7 +320,7 @@ def add_word_timestamps(
     ]
 
     text_tokens = list(itertools.chain.from_iterable(text_tokens_per_segment))
-    alignment = find_alignment(model, tokenizer, text_tokens, mel, num_frames, **kwargs)
+    alignment = find_alignment(model, cross_qk, tokenizer, text_tokens, mel, num_frames, **kwargs)
     word_durations = np.array([t.end - t.start for t in alignment])
     word_durations = word_durations[word_durations.nonzero()]
     median_duration = np.median(word_durations) if len(word_durations) > 0 else 0.0
