@@ -11,20 +11,10 @@ from audio import CHUNK_LENGTH
 from tokenizer import Tokenizer, get_tokenizer
 from utils import compression_ratio
 
-if TYPE_CHECKING:
-    from model import Whisper
-
-import onnxruntime_genai as og
-
 
 @torch.no_grad()
 def detect_language(
-    model: og.Model,
-    mel: Tensor,
-    n_vocab: int,
-    is_multilingual: bool,
-    num_languages: int,
-    tokenizer: Tokenizer = None,
+    model: "WhisperONNX", mel: Tensor, tokenizer: Tokenizer = None
 ) -> Tuple[Tensor, List[dict]]:
     """
     Detect the spoken language in the audio, and return them as list of strings, along with the ids
@@ -40,7 +30,7 @@ def detect_language(
     """
     if tokenizer is None:
         tokenizer = get_tokenizer(
-            is_multilingual, num_languages=num_languages
+            model.is_multilingual, num_languages=model.num_languages
         )
     if (
         tokenizer.language is None
@@ -54,23 +44,32 @@ def detect_language(
     if single:
         mel = mel.unsqueeze(0)
 
-    # skip encoder forward pass if already-encoded audio features were given
+    ###################################################################################
+    # TODO: Uncomment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
+
+    # # skip encoder forward pass if already-encoded audio features were given
     # if mel.shape[-2:] != (model.dims.n_audio_ctx, model.dims.n_audio_state):
     #     mel = model.encoder(mel)
 
+    # # forward pass using a single token, startoftranscript
+    # n_audio = mel.shape[0]
+    # x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
+    # logits = model.logits(x, mel)[:, 0]
+    ###################################################################################
+
+    ###################################################################################
+    # TODO: Comment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
+
     # forward pass using a single token, startoftranscript
     n_audio = mel.shape[0]
-    x = torch.tensor([[tokenizer.sot]] * n_audio)  # [n_audio, 1]
-
-    # og.set_log_options(enabled=True, model_input_values=True, model_output_shapes=True)
-    params = og.GeneratorParams(model)
-    params.whisper_input_features = mel.detach().cpu().numpy().astype(np.float16)
-    params.input_ids = x.detach().cpu().numpy().astype(np.int32)
-
-    # logits = model.logits(x, mel)[:, 0]
-    generator = og.Generator(model, params)
-    generator.compute_logits()
-    logits = torch.from_numpy(generator.get_output('logits')).reshape(n_audio, -1, n_vocab)[:, 0]
+    x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
+    logits = model(mel, x)[:, 0]
+    model.reset_inputs()  # reset inputs since this is a one-time pass through the encoder and decoder init
+    ###################################################################################
 
     # collect detected languages; suppress all non-language tokens
     mask = torch.ones(logits.shape[-1], dtype=torch.bool)
@@ -132,8 +131,8 @@ class DecodingOptions:
 
 @dataclass(frozen=True)
 class DecodingResult:
-    # audio_features: Tensor
-    # language: str
+    audio_features: Tensor
+    language: str
     language_probs: Optional[Dict[str, float]] = None
     tokens: List[int] = field(default_factory=list)
     text: str = ""
@@ -141,7 +140,6 @@ class DecodingResult:
     no_speech_prob: float = np.nan
     temperature: float = np.nan
     compression_ratio: float = np.nan
-    cross_qk: Optional[torch.Tensor] = None
 
 
 class Inference:
@@ -193,6 +191,34 @@ class PyTorchInference(Inference):
                 self.kv_cache[module] = self.kv_cache[module][source_indices].detach()
 
 
+class ONNXInference(Inference):
+    def __init__(self, model: "WhisperONNX", initial_token_length: int):
+        self.model = model
+        self.initial_token_length = initial_token_length
+
+    def is_done(self) -> bool:
+        return self.model.generator.is_done()
+
+    def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
+        if tokens.shape[-1] > self.initial_token_length:
+            # only need to use the last token except in the first forward pass
+            tokens = tokens[:, -1:]
+
+        return self.model.decoder(tokens, audio_features)
+
+    def cleanup_caching(self):
+        """
+        Not needed for ONNX inference
+        """
+        pass
+
+    def rearrange_kv_cache(self, source_indices):
+        """
+        Not needed for ONNX inference
+        """
+        pass
+
+
 class SequenceRanker:
     def rank(
         self, tokens: List[List[Tensor]], sum_logprobs: List[List[float]]
@@ -228,6 +254,22 @@ class MaximumLikelihoodRanker(SequenceRanker):
         # get the sequence with the highest score
         lengths = [[len(t) for t in s] for s in tokens]
         return [np.argmax(scores(p, l)) for p, l in zip(sum_logprobs, lengths)]
+
+
+class MaximumLikelihoodRankerONNX(SequenceRanker):
+    """
+    Select the sample with the highest log probabilities, penalized using either
+    a simple length normalization or Google NMT paper's length penalty
+    """
+
+    def __init__(self, length_penalty: Optional[float]):
+        self.length_penalty = length_penalty
+    
+    def rank(self, tokens: List[List[Tensor]], sum_logprobs: List[List[float]]):
+        """
+        Not needed for ONNX inference
+        """
+        pass
 
 
 class TokenDecoder:
@@ -313,6 +355,26 @@ class GreedyDecoder(TokenDecoder):
         # make sure each sequence has at least one EOT token at the end
         tokens = F.pad(tokens, (0, 1), value=self.eot)
         return tokens, sum_logprobs.tolist()
+
+
+class GreedyDecoderONNX(TokenDecoder):
+    def __init__(self, temperature: float, eot: int):
+        self.temperature = temperature
+        self.eot = eot
+
+    def update(
+        self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
+    ) -> Tuple[Tensor, bool]:
+        """
+        Not needed for ONNX inference
+        """
+        pass
+
+    def finalize(self, tokens: Tensor, sum_logprobs: Tensor):
+        """
+        Not needed for ONNX inference
+        """
+        return tokens, sum_logprobs
 
 
 class BeamSearchDecoder(TokenDecoder):
@@ -421,6 +483,43 @@ class BeamSearchDecoder(TokenDecoder):
         return tokens, sum_logprobs
 
 
+class BeamSearchDecoderONNX(TokenDecoder):
+    def __init__(
+        self,
+        beam_size: int,
+        eot: int,
+        inference: Inference,
+        patience: Optional[float] = None,
+    ):
+        self.beam_size = beam_size
+        self.eot = eot
+        self.inference = inference
+        self.patience = patience or 1.0
+        self.max_candidates: int = round(beam_size * self.patience)
+        self.finished_sequences = None
+
+        assert (
+            self.max_candidates > 0
+        ), f"Invalid beam size ({beam_size}) or patience ({patience})"
+
+    def reset(self):
+        self.finished_sequences = None
+
+    def update(
+        self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
+    ) -> Tuple[Tensor, bool]:
+        """
+        Not needed for ONNX inference
+        """
+        pass
+
+    def finalize(self, preceding_tokens: Tensor, sum_logprobs: Tensor):
+        """
+        Not needed for ONNX inference
+        """
+        return preceding_tokens, sum_logprobs
+
+
 class LogitFilter:
     def apply(self, logits: Tensor, tokens: Tensor) -> None:
         """Apply any filtering or masking to logits in-place
@@ -447,12 +546,35 @@ class SuppressBlank(LogitFilter):
             logits[:, self.tokenizer.encode(" ") + [self.tokenizer.eot]] = -np.inf
 
 
+class SuppressBlankONNX(LogitFilter):
+    def __init__(self, tokenizer: Tokenizer, sample_begin: int):
+        self.tokenizer = tokenizer
+        self.sample_begin = sample_begin
+
+    def apply(self, logits: Tensor, tokens: Tensor):
+        """
+        Not needed for ONNX inference
+        """
+        pass
+
+
 class SuppressTokens(LogitFilter):
     def __init__(self, suppress_tokens: Sequence[int]):
         self.suppress_tokens = list(suppress_tokens)
 
     def apply(self, logits: Tensor, tokens: Tensor):
         logits[:, self.suppress_tokens] = -np.inf
+
+
+class SuppressTokensONNX(LogitFilter):
+    def __init__(self, suppress_tokens: Sequence[int]):
+        self.suppress_tokens = list(suppress_tokens)
+
+    def apply(self, logits: Tensor, tokens: Tensor):
+        """
+        Not needed for ONNX inference
+        """
+        pass
 
 
 class ApplyTimestampRules(LogitFilter):
@@ -522,42 +644,46 @@ class ApplyTimestampRules(LogitFilter):
                 logits[k, : self.tokenizer.timestamp_begin] = -np.inf
 
 
+class ApplyTimestampRulesONNX(LogitFilter):
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        sample_begin: int,
+        max_initial_timestamp_index: Optional[int],
+    ):
+        self.tokenizer = tokenizer
+        self.sample_begin = sample_begin
+        self.max_initial_timestamp_index = max_initial_timestamp_index
+
+    def apply(self, logits: Tensor, tokens: Tensor):
+        """
+        Not needed for ONNX inference
+        """
+        pass
+
+
 class DecodingTask:
     inference: Inference
     sequence_ranker: SequenceRanker
     decoder: TokenDecoder
     logit_filters: List[LogitFilter]
 
-    def __init__(
-        self,
-        model: og.Model,
-        is_multilingual: bool,
-        num_languages: int,
-        n_text_ctx: int,
-        n_audio_ctx: int,
-        n_vocab: int,
-        options: DecodingOptions,
-    ):
-        self.is_multilingual = is_multilingual
-        self.num_languages = num_languages
-        self.n_vocab = n_vocab
-
+    def __init__(self, model: "WhisperONNX", options: DecodingOptions):
         self.model = model
 
         language = options.language or "en"
         tokenizer = get_tokenizer(
-            is_multilingual,
-            num_languages=num_languages,
+            model.is_multilingual,
+            num_languages=model.num_languages,
             language=language,
             task=options.task,
         )
         self.tokenizer: Tokenizer = tokenizer
         self.options: DecodingOptions = self._verify_options(options)
 
-        # self.n_group: int = options.beam_size or options.best_of or 1
-        self.n_group = 1
-        self.n_ctx: int = n_text_ctx
-        self.sample_len: int = options.sample_len or n_text_ctx // 2
+        self.n_group: int = options.beam_size or options.best_of or 1
+        self.n_ctx: int = model.dims.n_text_ctx
+        self.sample_len: int = options.sample_len or model.dims.n_text_ctx // 2
 
         self.sot_sequence: Tuple[int] = tokenizer.sot_sequence
         if self.options.without_timestamps:
@@ -567,35 +693,35 @@ class DecodingTask:
         self.sample_begin: int = len(self.initial_tokens)
         self.sot_index: int = self.initial_tokens.index(tokenizer.sot)
 
-        # # inference: implements the forward pass through the decoder, including kv caching
-        # self.inference = PyTorchInference(model, len(self.initial_tokens))
+        # inference: implements the forward pass through the decoder, including kv caching
+        self.inference = ONNXInference(model, len(self.initial_tokens))
 
         # sequence ranker: implements how to rank a group of sampled sequences
-        self.sequence_ranker = MaximumLikelihoodRanker(options.length_penalty)
+        self.sequence_ranker = MaximumLikelihoodRankerONNX(options.length_penalty)
 
         # decoder: implements how to select the next tokens, given the autoregressive distribution
         if options.beam_size is not None:
-            self.decoder = BeamSearchDecoder(
-                options.beam_size, tokenizer.eot, None, options.patience
+            self.decoder = BeamSearchDecoderONNX(
+                options.beam_size, tokenizer.eot, self.inference, options.patience
             )
         else:
-            self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
+            self.decoder = GreedyDecoderONNX(options.temperature, tokenizer.eot)
 
         # logit filters: applies various rules to suppress or penalize certain tokens
         self.logit_filters = []
         if self.options.suppress_blank:
-            self.logit_filters.append(SuppressBlank(self.tokenizer, self.sample_begin))
+            self.logit_filters.append(SuppressBlankONNX(self.tokenizer, self.sample_begin))
         if self.options.suppress_tokens:
-            self.logit_filters.append(SuppressTokens(self._get_suppress_tokens()))
+            self.logit_filters.append(SuppressTokensONNX(self._get_suppress_tokens()))
         if not options.without_timestamps:
-            precision = CHUNK_LENGTH / n_audio_ctx  # usually 0.02 seconds
+            precision = CHUNK_LENGTH / model.dims.n_audio_ctx  # usually 0.02 seconds
             max_initial_timestamp_index = None
             if options.max_initial_timestamp:
                 max_initial_timestamp_index = round(
                     self.options.max_initial_timestamp / precision
                 )
             self.logit_filters.append(
-                ApplyTimestampRules(
+                ApplyTimestampRulesONNX(
                     tokenizer, self.sample_begin, max_initial_timestamp_index
                 )
             )
@@ -672,7 +798,21 @@ class DecodingTask:
 
         return tuple(sorted(set(suppress_tokens)))
 
-    def _get_audio_features(self, mel: Tensor):
+    ###################################################################################
+    # TODO: Uncomment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
+
+    # def _get_audio_features(self, mel: Tensor):
+    ###################################################################################
+    
+    ###################################################################################
+    # TODO: Comment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
+
+    def _get_audio_features(self, mel: Tensor, tokens: Tensor):
+    ###################################################################################
         if self.options.fp16:
             mel = mel.half()
 
@@ -683,7 +823,21 @@ class DecodingTask:
             # encoded audio features are given; skip audio encoding
             audio_features = mel
         else:
-            audio_features = self.model.encoder(mel)
+            ###################################################################################
+            # TODO: Uncomment once re-designed export is completed since encoder
+            # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+            # and model.logits(...) instead of just model(...) as it currently is)
+
+            # audio_features = self.model.encoder(mel)
+            ###################################################################################
+
+            ###################################################################################
+            # TODO: Comment once re-designed export is completed since encoder
+            # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+            # and model.logits(...) instead of just model(...) as it currently is)
+
+            audio_features = self.model.encoder(mel, tokens)
+            ###################################################################################
 
         if audio_features.dtype != (
             torch.float16 if self.options.fp16 else torch.float32
@@ -699,174 +853,285 @@ class DecodingTask:
         lang_probs = None
 
         if self.options.language is None or self.options.task == "lang_id":
-            # lang_tokens, lang_probs = self.model.detect_language(
-            #     audio_features, self.tokenizer
-            # )
-            lang_tokens, lang_probs = detect_language(self.model, audio_features, self.n_vocab, self.is_multilingual, self.num_languages)
+            lang_tokens, lang_probs = self.model.detect_language(
+                audio_features, self.tokenizer
+            )
             languages = [max(probs, key=probs.get) for probs in lang_probs]
             if self.options.language is None:
                 tokens[:, self.sot_index + 1] = lang_tokens  # write language tokens
 
         return languages, lang_probs
 
+    ###################################################################################
+    # TODO: Uncomment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
+
+    # def _main_loop(self, audio_features: Tensor, tokens: Tensor):
+    #     n_batch = tokens.shape[0]
+    #     sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
+    #     no_speech_probs = [np.nan] * n_batch
+
+    #     try:
+    #         for i in range(self.sample_len):
+    #             logits = self.inference.logits(tokens, audio_features)
+
+    #             if (
+    #                 i == 0 and self.tokenizer.no_speech is not None
+    #             ):  # save no_speech_probs
+    #                 probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
+    #                 no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
+
+    #             # now we need to consider the logits at the last token only
+    #             logits = logits[:, -1]
+
+    #             # apply the logit filters, e.g. for suppressing or applying penalty to
+    #             for logit_filter in self.logit_filters:
+    #                 logit_filter.apply(logits, tokens)
+
+    #             # expand the tokens tensor with the selected next tokens
+    #             tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
+
+    #             if completed or tokens.shape[-1] > self.n_ctx:
+    #                 break
+    #     finally:
+    #         self.inference.cleanup_caching()
+
+    #     return tokens, sum_logprobs, no_speech_probs
+    ###################################################################################
+
+    ###################################################################################
+    # TODO: Comment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
+
     def _main_loop(self, mel: Tensor, tokens: Tensor):
         n_batch = tokens.shape[0]
-        sum_logprobs: Tensor = torch.zeros(n_batch)
+        sum_logprobs: Tensor = torch.zeros(n_batch, device=mel.device)
         no_speech_probs = [np.nan] * n_batch
 
-        # og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
-        n_vocab = 51865
-        params = og.GeneratorParams(self.model)
-        # params.set_search_options(num_beams=self.n_group)
-        params.whisper_input_features = mel.detach().cpu().numpy().astype(np.float16)
-        params.input_ids = tokens.detach().cpu().numpy().astype(np.int32)
-        params.alignment_heads = np.array([[2, 2], [3, 0], [3, 2], [3, 3], [3, 4], [3, 5]]).astype(np.int32)  # for whisper-tiny
+        ###################################################################################
+        # TODO: Comment once re-designed export is completed since encoder
+        # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+        # and model.logits(...) instead of just model(...) as it currently is)
 
-        generator = og.Generator(self.model, params)
-        generator.compute_logits()
-        logits = torch.from_numpy(generator.get_output('logits')).reshape(n_batch, -1, n_vocab)#[:, 0]
+        # Encoder-decoder-init has already run so the no_speech_probs can be calculated
+        if self.tokenizer.no_speech is not None:  # save no_speech_probs
+            logits = torch.from_numpy(self.inference.model.generator.get_output("logits"))  # logits from encoder-decoder-init
+            probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
+            no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
+        ###################################################################################
+        
+        self.inference.model.generator.generate_next_token()  # generate next token since encoder-decoder-init already ran
+        try:
+            while not self.inference.is_done():
+                logits = self.inference.logits(tokens, mel)
 
-        probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
-        no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
+                ###################################################################################
+                # TODO: Uncomment once ONNX Runtime GenAI supports logit filters
 
-        generator.generate_next_token()
+                # # now we need to consider the logits at the last token only
+                # logits = logits[:, -1]
 
-        while not generator.is_done():
-            generator.compute_logits()
-            generator.generate_next_token()
-            # break
+                # # apply the logit filters, e.g. for suppressing or applying penalty to
+                # for logit_filter in self.logit_filters:
+                #     logit_filter.apply(logits, tokens)
 
-        tokens = generator.get_sequence(0)
-        cross_qks = torch.from_numpy(generator.get_output("cross_qk"))
+                # # expand the tokens tensor with the selected next tokens
+                # tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
 
-            # for i in range(self.sample_len):
-            #     logits = self.inference.logits(tokens, audio_features)
+                # if completed or tokens.shape[-1] > self.n_ctx:
+                #     break
+                ###################################################################################
 
-            #     if (
-            #         i == 0 and self.tokenizer.no_speech is not None
-            #     ):  # save no_speech_probs
-            #         probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
-            #         no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
+                ###################################################################################
+                # TODO: Comment once ONNX Runtime GenAI supports logit filters
 
-            #     # now we need to consider the logits at the last token only
-            #     logits = logits[:, -1]
+                # generate next token
+                self.inference.model.generator.generate_next_token()
+                ###################################################################################
 
-            #     # apply the logit filters, e.g. for suppressing or applying penalty to
-            #     for logit_filter in self.logit_filters:
-            #         logit_filter.apply(logits, tokens)
+        finally:
+            self.inference.cleanup_caching()
 
-            #     # expand the tokens tensor with the selected next tokens
-            #     tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
+        tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0))
+        return tokens, sum_logprobs, no_speech_probs
+    ###################################################################################
 
-            #     if completed or tokens.shape[-1] > self.n_ctx:
-            #         break
-        # finally:
-        #     self.inference.cleanup_caching()
+    ###################################################################################
+    # TODO: Uncomment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
 
-        return tokens, sum_logprobs, no_speech_probs, cross_qks
+    # @torch.no_grad()
+    # def run(self, mel: Tensor) -> List[DecodingResult]:
+    #     self.decoder.reset()
+    #     tokenizer: Tokenizer = self.tokenizer
+    #     n_audio: int = mel.shape[0]
+
+    #     audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
+    #     tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
+
+    #     # detect language if requested, overwriting the language token
+    #     languages, language_probs = self._detect_language(audio_features, tokens)
+    #     if self.options.task == "lang_id":
+    #         return [
+    #             DecodingResult(
+    #                 audio_features=features, language=language, language_probs=probs
+    #             )
+    #             for features, language, probs in zip(
+    #                 audio_features, languages, language_probs
+    #             )
+    #         ]
+
+    #     # repeat text tensors by the group size, for beam search or best-of-n sampling
+    #     tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
+
+    #     # call the main sampling loop
+    #     tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
+
+    #     # reshape the tensors to have (n_audio, n_group) as the first two dimensions
+    #     audio_features = audio_features[:: self.n_group]
+    #     no_speech_probs = no_speech_probs[:: self.n_group]
+    #     assert audio_features.shape[0] == len(no_speech_probs) == n_audio
+
+    #     tokens = tokens.reshape(n_audio, self.n_group, -1)
+    #     sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
+
+    #     # get the final candidates for each group, and slice between the first sampled token and EOT
+    #     tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+    #     tokens: List[List[Tensor]] = [
+    #         [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
+    #         for s in tokens
+    #     ]
+
+    #     # select the top-ranked sample in each group
+    #     selected = self.sequence_ranker.rank(tokens, sum_logprobs)
+    #     tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
+    #     texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
+
+    #     sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
+    #     avg_logprobs: List[float] = [
+    #         lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
+    #     ]
+
+    #     fields = (
+    #         texts,
+    #         languages,
+    #         tokens,
+    #         audio_features,
+    #         avg_logprobs,
+    #         no_speech_probs,
+    #     )
+    #     if len(set(map(len, fields))) != 1:
+    #         raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
+
+    #     return [
+    #         DecodingResult(
+    #             audio_features=features,
+    #             language=language,
+    #             tokens=tokens,
+    #             text=text,
+    #             avg_logprob=avg_logprob,
+    #             no_speech_prob=no_speech_prob,
+    #             temperature=self.options.temperature,
+    #             compression_ratio=compression_ratio(text),
+    #         )
+    #         for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
+    #             *fields
+    #         )
+    #     ]
+    ###################################################################################
+
+    ###################################################################################
+    # TODO: Comment once re-designed export is completed since encoder
+    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
+    # and model.logits(...) instead of just model(...) as it currently is)
 
     @torch.no_grad()
     def run(self, mel: Tensor) -> List[DecodingResult]:
-        # self.decoder.reset()
+        self.decoder.reset()
         tokenizer: Tokenizer = self.tokenizer
         n_audio: int = mel.shape[0]
 
-        # audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
         tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
+        audio_features: Tensor = self._get_audio_features(mel, tokens)  # encoder forward pass
 
-        # Already running detect_language in transcribe()
-        # # detect language if requested, overwriting the language token
-        # languages, language_probs = self._detect_language(audio_features, tokens)
-        # if self.options.task == "lang_id":
-        #     return [
-        #         DecodingResult(
-        #             audio_features=features, language=language, language_probs=probs
-        #         )
-        #         for features, language, probs in zip(
-        #             audio_features, languages, language_probs
-        #         )
-        #     ]
+        # detect language if requested, overwriting the language token
+        languages, language_probs = self._detect_language(mel, tokens)
+
+        if self.options.task == "lang_id":
+            return [
+                DecodingResult(
+                    audio_features=features, language=language, language_probs=probs
+                )
+                for features, language, probs in zip(
+                    audio_features, languages, language_probs
+                )
+            ]
 
         # repeat text tensors by the group size, for beam search or best-of-n sampling
-        # tokens = tokens.repeat_interleave(self.n_group, dim=0).to(device)
+        tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
 
         # call the main sampling loop
-        tokens, sum_logprobs, no_speech_probs, cross_qks = self._main_loop(mel, tokens)
+        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
-        # audio_features = audio_features[:: self.n_group]
+        audio_features = audio_features[:: self.n_group]
         no_speech_probs = no_speech_probs[:: self.n_group]
-        # assert audio_features.shape[0] == len(no_speech_probs) == n_audio
+        assert audio_features.shape[0] == len(no_speech_probs) == n_audio
 
-        print(tokens)
-        print(cross_qks)
         tokens = tokens.reshape(n_audio, self.n_group, -1)
         sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
 
         # get the final candidates for each group, and slice between the first sampled token and EOT
-        # tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
-
-        # Run greedy search
-        # make sure each sequence has at least one EOT token at the end
-        tokens = torch.from_numpy(tokens)
-        tokens = F.pad(tokens, (0, 1), value=tokenizer.eot)
-        tokens, sum_logprobs = tokens, sum_logprobs.tolist()
-
-        tokens: List[List[Tensor]] = [
-            [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
-            for s in tokens
-        ]
-
-        # select the top-ranked sample in each group
-        selected = self.sequence_ranker.rank(tokens, sum_logprobs)
-        tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
+        tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+        
+        # create mask to remove prompt token ids and EOS token ids
+        mask = torch.ones_like(tokens)
+        mask[:, :, :self.sample_begin] = False  # don't pick elements before `self.sample_begin`
+        eot_positions = (tokens == tokenizer.eot).nonzero(as_tuple=True)  # get indices of elements with a value of `EOS token id`
+        mask[eot_positions] = False  # don't pick elements with a value of `EOS token id` 
+        
+        # apply mask and choose first return sequence
+        tokens = tokens.masked_select(mask.bool()).view(tokens.shape[0], tokens.shape[1], -1)
+        tokens = tokens[:, 0, :]
+        
         texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
-
-        sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
-        avg_logprobs: List[float] = [
-            lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
-        ]
 
         fields = (
             texts,
-            # languages,
+            languages,
             tokens,
-            # audio_features,
-            avg_logprobs,
+            audio_features,
+            [-1],  # avg_logprobs
             no_speech_probs,
-            cross_qks,
         )
         if len(set(map(len, fields))) != 1:
             raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
 
         return [
             DecodingResult(
-                # audio_features=features,
-                # language=language,
+                audio_features=features,
+                language=language,
                 tokens=tokens,
                 text=text,
                 avg_logprob=avg_logprob,
                 no_speech_prob=no_speech_prob,
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(text),
-                cross_qk=cross_qk.to("cuda"),
             )
-            for text, tokens, avg_logprob, no_speech_prob, cross_qk in zip(
-            # for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
+            for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
                 *fields
             )
         ]
+    ###################################################################################
 
 
 @torch.no_grad()
 def decode(
-    model: og.Model,
+    model: "WhisperONNX",
     mel: Tensor,
-    is_multilingual: bool,
-    num_languages: int,
-    n_text_ctx: int,
-    n_audio_ctx: int,
-    n_vocab: int,
     options: DecodingOptions = DecodingOptions(),
     **kwargs,
 ) -> Union[DecodingResult, List[DecodingResult]]:
@@ -895,6 +1160,6 @@ def decode(
     if kwargs:
         options = replace(options, **kwargs)
 
-    result = DecodingTask(model, is_multilingual, num_languages, n_text_ctx, n_audio_ctx, n_vocab, options).run(mel)
+    result = DecodingTask(model, options).run(mel)
 
     return result[0] if single else result

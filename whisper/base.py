@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from audio import load_audio, log_mel_spectrogram, pad_or_trim
 from decoding import DecodingOptions, DecodingResult, decode, detect_language
-from model import ModelDimensions, Whisper
+from model import ModelDimensions, Whisper, WhisperONNX
 from transcribe import transcribe
 from version import __version__
 
@@ -154,3 +154,52 @@ def load_model(
         model.set_alignment_heads(alignment_heads)
 
     return model.to(device)
+
+def load_onnx_model(
+    name: str,
+    device: str,
+    path: str,
+    download_root: str = None,
+    in_memory: bool = False,
+) -> WhisperONNX:
+    """
+    Load a Whisper ASR model
+
+    Parameters
+    ----------
+    name : str
+        one of the official model names listed by `whisper.available_models()`
+    device : str
+        the PyTorch device to put the model into
+    path : str
+        path to folder containing ONNX models and genai_config.json
+    download_root: str
+        path to download the model files; by default, it uses "~/.cache/whisper"
+    in_memory: bool
+        whether to preload the model weights into host memory
+
+    Returns
+    -------
+    model : Whisper
+        The Whisper ASR model instance
+    """
+
+    if download_root is None:
+        default = os.path.join(os.path.expanduser("~"), ".cache")
+        download_root = os.path.join(os.getenv("XDG_CACHE_HOME", default), "whisper")
+
+    assert name in _MODELS
+    checkpoint_file = _download(_MODELS[name], download_root, in_memory)
+    alignment_heads = _ALIGNMENT_HEADS[name]
+
+    with open(checkpoint_file, "rb") as fp:
+        checkpoint = torch.load(fp, map_location="cpu")
+    del checkpoint_file
+
+    dims = ModelDimensions(**checkpoint["dims"])
+    model = WhisperONNX(dims, path, device)
+
+    if alignment_heads is not None:
+        model.set_alignment_heads(alignment_heads)
+
+    return model

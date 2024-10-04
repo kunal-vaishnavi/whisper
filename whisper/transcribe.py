@@ -17,7 +17,7 @@ from audio import (
     log_mel_spectrogram,
     pad_or_trim,
 )
-from decoding import DecodingOptions, DecodingResult, decode, detect_language
+from decoding import DecodingOptions, DecodingResult
 from timing import add_word_timestamps
 from tokenizer import LANGUAGES, TO_LANGUAGE_CODE, get_tokenizer
 from utils import (
@@ -31,23 +31,10 @@ from utils import (
     str2bool,
 )
 
-if TYPE_CHECKING:
-    from model import Whisper
-
-import onnxruntime_genai as og
-
 
 def transcribe(
-    model: og.Model,
-    params: og.GeneratorParams,
-    device: torch.device,
+    model: "WhisperONNX",
     audio: Union[str, np.ndarray, torch.Tensor],
-    n_mels: int,
-    n_audio_ctx: int,
-    n_text_ctx: int,
-    n_vocab: int,
-    is_multilingual: bool,
-    num_languages: int,
     *,
     verbose: Optional[bool] = None,
     temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
@@ -129,7 +116,7 @@ def transcribe(
     the spoken language ("language"), which is detected when `decode_options["language"]` is None.
     """
     dtype = torch.float16 if decode_options.get("fp16", True) else torch.float32
-    if device == torch.device("cpu"):
+    if model.device == torch.device("cpu"):
         if torch.cuda.is_available():
             warnings.warn("Performing inference on CPU when CUDA is available")
         if dtype == torch.float16:
@@ -140,31 +127,31 @@ def transcribe(
         decode_options["fp16"] = False
 
     # Pad 30-seconds of silence to the input audio, for slicing
-    mel = log_mel_spectrogram(audio, n_mels, padding=N_SAMPLES)
+    mel = log_mel_spectrogram(audio, model.dims.n_mels, padding=N_SAMPLES)
     content_frames = mel.shape[-1] - N_FRAMES
     content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
 
     if decode_options.get("language", None) is None:
-        if not is_multilingual:
+        if not model.is_multilingual:
             decode_options["language"] = "en"
         else:
             if verbose:
                 print(
                     "Detecting language using up to the first 30 seconds. Use `--language` to specify the language"
                 )
-            mel_segment = pad_or_trim(mel, N_FRAMES).to(device).to(dtype)
-            # _, probs = detect_language(model, mel_segment, n_vocab, is_multilingual, num_languages)
-            # decode_options["language"] = max(probs, key=probs.get)
-            # if verbose is not None:
-            #     print(
-            #         f"Detected language: {LANGUAGES[decode_options['language']].title()}"
-            #     )
+            mel_segment = pad_or_trim(mel, N_FRAMES).to(model.device).to(dtype)
+            _, probs = model.detect_language(mel_segment)
+            decode_options["language"] = max(probs, key=probs.get)
+            if verbose is not None:
+                print(
+                    f"Detected language: {LANGUAGES[decode_options['language']].title()}"
+                )
 
-    language: str = decode_options.get("language", "english")
+    language: str = decode_options["language"]
     task: str = decode_options.get("task", "transcribe")
     tokenizer = get_tokenizer(
-        is_multilingual,
-        num_languages=num_languages,
+        model.is_multilingual,
+        num_languages=model.num_languages,
         language=language,
         task=task,
     )
@@ -202,8 +189,7 @@ def transcribe(
                 kwargs.pop("best_of", None)
 
             options = DecodingOptions(**kwargs, temperature=t)
-            decode_result = decode(model, segment, is_multilingual, num_languages, n_text_ctx, n_audio_ctx, n_vocab, options)
-            return decode_result
+            decode_result = model.decode(segment, options)
 
             needs_fallback = False
             if (
@@ -229,7 +215,7 @@ def transcribe(
     clip_idx = 0
     seek = seek_clips[clip_idx][0]
     input_stride = exact_div(
-        N_FRAMES, n_audio_ctx
+        N_FRAMES, model.dims.n_audio_ctx
     )  # mel frames per output token: 2
     time_precision = (
         input_stride * HOP_LENGTH / SAMPLE_RATE
@@ -284,10 +270,12 @@ def transcribe(
             segment_size = min(N_FRAMES, content_frames - seek, seek_clip_end - seek)
             mel_segment = mel[:, seek : seek + segment_size]
             segment_duration = segment_size * HOP_LENGTH / SAMPLE_RATE
-            mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(device).to(dtype)
+            mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(model.device).to(dtype)
+            print(mel_segment.shape)
 
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
             result: DecodingResult = decode_with_fallback(mel_segment)
+            print(result)
             tokens = torch.tensor(result.tokens)
 
             if no_speech_threshold is not None:
@@ -397,7 +385,6 @@ def transcribe(
                 add_word_timestamps(
                     segments=current_segments,
                     model=model,
-                    cross_qk=result.cross_qk,
                     tokenizer=tokenizer,
                     mel=mel_segment,
                     num_frames=segment_size,
@@ -535,7 +522,7 @@ def cli():
 
     parser.add_argument("--temperature", type=float, default=0, help="temperature to use for sampling")
     parser.add_argument("--best_of", type=optional_int, default=5, help="number of candidates when sampling with non-zero temperature")
-    parser.add_argument("--beam_size", type=optional_int, default=5, help="number of beams in beam search, only applicable when temperature is zero")
+    parser.add_argument("--beam_size", type=optional_int, default=1, help="number of beams in beam search, only applicable when temperature is zero")
     parser.add_argument("--patience", type=float, default=None, help="optional patience value to use in beam decoding, as in https://arxiv.org/abs/2204.05424, the default (1.0) is equivalent to conventional beam search")
     parser.add_argument("--length_penalty", type=float, default=1.0, help="optional token length penalty coefficient (alpha) as in https://arxiv.org/abs/1609.08144, uses simple length normalization by default")
 
@@ -584,27 +571,19 @@ def cli():
     if (threads := args.pop("threads")) > 0:
         torch.set_num_threads(threads)
 
-    from base import load_model
+    from base import load_onnx_model
 
-    # os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+    os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
     # os.environ["ORT_DISABLE_FLASH_ATTENTION"] = "1"
     # os.environ["ORT_DISABLE_TRT_FLASH_ATTENTION"] = "1"
     # os.environ["ORT_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
 
-    model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp16-dmmha")
-    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp32")
-    
-    params = None
-    # params = og.GeneratorParams(model)
-    # params.set_search_options(num_beams=args["beam_size"], length_penalty=args["length_penalty"])
-    device = torch.device("cuda:0")
-    n_mels = 80
-    n_audio_ctx = 1500
-    n_text_ctx = 448
-    n_vocab = 51865
-    is_multilingual = n_vocab >= 51865
-    num_languages = n_vocab - 51765 - int(is_multilingual)
     # model = load_model(model_name, device=device, download_root=model_dir)
+
+    model_path = "/datadisks/disk4/kvaishnavi/whisper/wtiny-fp16-dmmha"
+    model = load_onnx_model(model_name, device, model_path, download_root=model_dir, in_memory=False)
+    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp16-dmmha")
+    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp32")
 
     writer = get_writer(output_format, output_dir)
     word_options = [
@@ -624,7 +603,7 @@ def cli():
     writer_args = {arg: args.pop(arg) for arg in word_options}
     for audio_path in args.pop("audio"):
         try:
-            result = transcribe(model, params, device, audio_path, n_mels, n_audio_ctx, n_text_ctx, n_vocab, is_multilingual, num_languages, temperature=temperature, **args)
+            result = transcribe(model, audio_path, temperature=temperature, **args)
             writer(result, audio_path, **writer_args)
         except Exception as e:
             traceback.print_exc()

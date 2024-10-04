@@ -12,6 +12,9 @@ from decoding import decode as decode_function
 from decoding import detect_language as detect_language_function
 from transcribe import transcribe as transcribe_function
 
+import onnxruntime_genai as og
+og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
+
 
 @dataclass
 class ModelDimensions:
@@ -308,6 +311,119 @@ class Whisper(nn.Module):
 
         self.decoder.apply(install_hooks)
         return cache, hooks
+
+    detect_language = detect_language_function
+    transcribe = transcribe_function
+    decode = decode_function
+
+
+class WhisperONNX(nn.Module):
+    def __init__(self, dims: ModelDimensions, path: str, device: str):
+        super().__init__()
+        self.dims = dims
+        self.model = og.Model(path)
+        self.device = torch.device(device)
+
+    def set_alignment_heads(self, dump: bytes):
+        array = np.frombuffer(
+            gzip.decompress(base64.b85decode(dump)), dtype=bool
+        ).copy()
+        mask = torch.from_numpy(array).reshape(
+            self.dims.n_text_layer, self.dims.n_text_head
+        )
+        self.alignment_heads = mask.to_sparse().indices()
+
+    def set_inputs(self, audio_features, input_ids, search_options={}):
+        """
+        Sets fields for `og.Generator` object to prepare for
+        generation loop
+        """
+        # TODO: Change this once setting inputs during the generation loop
+        # is possible.
+
+        # Delete old generator
+        self.reset_inputs()
+
+        # Create new generator params
+        params = og.GeneratorParams(self.model)
+        params.whisper_input_features = audio_features.detach().cpu().numpy()
+        params.input_ids = input_ids.detach().cpu().numpy()
+        if audio_features.dtype == torch.float16:
+            params.alignment_heads = self.alignment_heads.detach().cpu().numpy().astype(np.int32)
+        if search_options != {}:
+            params.set_search_options(**search_options)
+
+        # Create new generator
+        self.generator = og.Generator(self.model, params)
+
+    def reset_inputs(self):
+        """
+        Delete `og.Generator` object so a new `og.Generator` object
+        can be constructed to set new inputs
+        """
+        # TODO: Remove this method once re-using the same `og.Generator`
+        # object for multiple runs is possible
+
+        if hasattr(self, "generator"):
+            # Delete old generator to free memory
+            del self.generator
+
+    def embed_audio(self, mel: torch.Tensor, tokens: torch.Tensor):
+        """
+        Computes self.encoder(mel)
+        """
+        self.set_inputs(mel, tokens)  # TODO: Remove `tokens` after new export design
+        print("embed_audio called")
+        self.generator.compute_logits()
+        encoder_hidden_states = self.generator.get_output("encoder_hidden_states")
+        return torch.from_numpy(encoder_hidden_states)
+
+    def logits(self, tokens: torch.Tensor = None, mel: torch.Tensor = None):
+        """
+        Computes self.decoder(tokens, audio_features)
+        """
+        # TODO: Change this once setting inputs during the generation loop
+        # is possible.
+        print("logits called")
+        self.generator.compute_logits()
+        logits = self.generator.get_output("logits")
+        return torch.from_numpy(logits)
+
+    def forward(
+        self, mel: torch.Tensor, tokens: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Computes self.decoder(tokens, self.encoder(mel))
+        """
+        # TODO: Change this once encoder-decoder-init graph structure
+        # does not exist and is replaced by encoder-decoder setup.
+        self.set_inputs(mel, tokens)
+        print("forward called")
+        self.generator.compute_logits()
+        logits = self.generator.get_output("logits")
+        return torch.from_numpy(logits)
+
+    def encoder(self, mel: torch.Tensor, tokens: torch.Tensor):
+        """
+        Wrapper function instead of using `self.encoder = AudioEncoder(...)`
+        and `self.encoder(inputs)`
+        """
+        return self.embed_audio(mel, tokens)
+
+    def decoder(self, tokens: torch.Tensor, mel: torch.Tensor):
+        """
+        Wrapper function instead of using `self.decoder = TextDecoder(...)`
+        and `self.decoder(inputs)`
+        """
+        return self.logits(tokens, mel)
+
+    @property
+    def is_multilingual(self):
+        return self.dims.n_vocab >= 51865
+
+    @property
+    def num_languages(self):
+        return self.dims.n_vocab - 51765 - int(self.is_multilingual)
 
     detect_language = detect_language_function
     transcribe = transcribe_function
