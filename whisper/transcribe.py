@@ -271,7 +271,7 @@ def transcribe(
             mel_segment = mel[:, seek : seek + segment_size]
             segment_duration = segment_size * HOP_LENGTH / SAMPLE_RATE
             mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(model.device).to(dtype)
-            print(mel_segment.shape)
+            print(mel_segment.flatten())
 
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
             result: DecodingResult = decode_with_fallback(mel_segment)
@@ -573,17 +573,17 @@ def cli():
 
     from base import load_onnx_model
 
-    os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+    # os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
     # os.environ["ORT_DISABLE_FLASH_ATTENTION"] = "1"
     # os.environ["ORT_DISABLE_TRT_FLASH_ATTENTION"] = "1"
     # os.environ["ORT_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
 
     # model = load_model(model_name, device=device, download_root=model_dir)
 
-    model_path = "/datadisks/disk4/kvaishnavi/whisper/wtiny-fp16-dmmha"
+    model_path = "/datadisks/disk4/kvaishnavi/whisper/new_export/wtiny-fp16"
     model = load_onnx_model(model_name, device, model_path, download_root=model_dir, in_memory=False)
-    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp16-dmmha")
-    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/wtiny-fp32")
+    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/old_export/wtiny-fp16-dmmha")
+    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/old_export/wtiny-fp32")
 
     writer = get_writer(output_format, output_dir)
     word_options = [

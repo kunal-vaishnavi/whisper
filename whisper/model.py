@@ -346,7 +346,11 @@ class WhisperONNX(nn.Module):
 
         # Create new generator params
         params = og.GeneratorParams(self.model)
-        params.whisper_input_features = audio_features.detach().cpu().numpy()
+        # params.audio_features = audio_features.detach().cpu().numpy()
+        # print(params.audio_features)
+        import numpy as np
+        params.audio_features = np.load("/datadisks/disk4/kvaishnavi/whisper/input_features_from_hf.npy").astype(np.float16)
+
         params.input_ids = input_ids.detach().cpu().numpy()
         if audio_features.dtype == torch.float16:
             params.alignment_heads = self.alignment_heads.detach().cpu().numpy().astype(np.int32)
@@ -372,11 +376,11 @@ class WhisperONNX(nn.Module):
         """
         Computes self.encoder(mel)
         """
-        self.set_inputs(mel, tokens)  # TODO: Remove `tokens` after new export design
+        self.set_inputs(mel, tokens)
         print("embed_audio called")
         self.generator.compute_logits()
         encoder_hidden_states = self.generator.get_output("encoder_hidden_states")
-        return torch.from_numpy(encoder_hidden_states)
+        return torch.from_numpy(encoder_hidden_states).to(dtype=mel.dtype, device=self.device)
 
     def logits(self, tokens: torch.Tensor = None, mel: torch.Tensor = None):
         """
@@ -387,7 +391,7 @@ class WhisperONNX(nn.Module):
         print("logits called")
         self.generator.compute_logits()
         logits = self.generator.get_output("logits")
-        return torch.from_numpy(logits)
+        return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
     def forward(
         self, mel: torch.Tensor, tokens: torch.Tensor
@@ -395,13 +399,23 @@ class WhisperONNX(nn.Module):
         """
         Computes self.decoder(tokens, self.encoder(mel))
         """
-        # TODO: Change this once encoder-decoder-init graph structure
-        # does not exist and is replaced by encoder-decoder setup.
         self.set_inputs(mel, tokens)
         print("forward called")
         self.generator.compute_logits()
         logits = self.generator.get_output("logits")
-        return torch.from_numpy(logits)
+
+        # encoder_hidden_states = self.generator.get_output("encoder_hidden_states")
+        # np.save(f"/datadisks/disk4/kvaishnavi/whisper/ort_encoder_hidden_states.npy", encoder_hidden_states)
+
+        # for i in range(4):
+        #     key_name, val_name = f"present_key_cross_{i}", f"present_value_cross_{i}"
+        #     key = self.generator.get_output(key_name)
+        #     val = self.generator.get_output(val_name)
+
+        #     np.save(f"/datadisks/disk4/kvaishnavi/whisper/ort_{key_name}.npy", key)
+        #     np.save(f"/datadisks/disk4/kvaishnavi/whisper/ort_{val_name}.npy", val)
+
+        return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
     def encoder(self, mel: torch.Tensor, tokens: torch.Tensor):
         """

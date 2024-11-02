@@ -49,13 +49,15 @@ def detect_language(
     # and decoder-init will be separate inference passes (e.g. model.encoder(...)
     # and model.logits(...) instead of just model(...) as it currently is)
 
-    # # skip encoder forward pass if already-encoded audio features were given
-    # if mel.shape[-2:] != (model.dims.n_audio_ctx, model.dims.n_audio_state):
-    #     mel = model.encoder(mel)
-
-    # # forward pass using a single token, startoftranscript
     # n_audio = mel.shape[0]
     # x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
+
+    # # skip encoder forward pass if already-encoded audio features were given
+    # if mel.shape[-2:] != (model.dims.n_audio_ctx, model.dims.n_audio_state):
+    #     mel = model.encoder(mel, x)
+    #     model.generator.generate_next_token()  # dummy method called for now
+
+    # # forward pass using a single token, startoftranscript
     # logits = model.logits(x, mel)[:, 0]
     ###################################################################################
 
@@ -67,7 +69,9 @@ def detect_language(
     # forward pass using a single token, startoftranscript
     n_audio = mel.shape[0]
     x = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)  # [n_audio, 1]
-    logits = model(mel, x)[:, 0]
+    # import pdb; pdb.set_trace()
+    logits = model(mel, x)
+    logits = logits[:, 0]
     model.reset_inputs()  # reset inputs since this is a one-time pass through the encoder and decoder init
     ###################################################################################
 
