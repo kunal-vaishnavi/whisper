@@ -323,6 +323,7 @@ class WhisperONNX(nn.Module):
         self.dims = dims
         self.model = og.Model(path)
         self.device = torch.device(device)
+        self.idx = 0
 
     def set_alignment_heads(self, dump: bytes):
         array = np.frombuffer(
@@ -390,7 +391,12 @@ class WhisperONNX(nn.Module):
         # is possible.
         print("logits called")
         self.generator.compute_logits()
+        # if self.idx == 9:
+        #     import pdb; pdb.set_trace()
         logits = self.generator.get_output("logits")
+        logits2 = self.generator.get_logits()
+        # np.save(f"/datadisks/disk4/kvaishnavi/whisper/get_logits/bad_logits_{self.idx}.npy", logits2)
+        self.idx += 1
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
     def forward(
