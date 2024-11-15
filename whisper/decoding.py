@@ -928,7 +928,7 @@ class DecodingTask:
         
         self.inference.model.generator.generate_next_token()  # generate next token since encoder-decoder-init already ran
         try:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             while not self.inference.is_done():
                 logits = self.inference.logits(tokens, mel)
 
@@ -957,6 +957,7 @@ class DecodingTask:
                 ###################################################################################
 
         finally:
+            # import pdb; pdb.set_trace()
             self.inference.cleanup_caching()
 
         tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0))
@@ -1080,7 +1081,7 @@ class DecodingTask:
 
         # call the main sampling loop
         tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         audio_features = audio_features[:: self.n_group]
@@ -1103,7 +1104,7 @@ class DecodingTask:
         tokens = tokens.masked_select(mask.bool()).view(tokens.shape[0], tokens.shape[1], -1)
         tokens = tokens[:, 0, :]
         
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
 
         fields = (

@@ -580,11 +580,11 @@ def cli():
 
     # model = load_model(model_name, device=device, download_root=model_dir)
 
-    model_path = "/datadisks/disk4/kvaishnavi/whisper/new_export/wtiny-fp16"
-    # model_path = "/datadisks/disk4/kvaishnavi/whisper/new_export/wtiny-fp16-no-qk"
+    model_path = "/home/kvaishnavi/whisper/new_export/wtiny-fp16"
+    # model_path = "/home/kvaishnavi/whisper/new_export/wtiny-fp16-no-qk"
     model = load_onnx_model(model_name, device, model_path, download_root=model_dir, in_memory=False)
-    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/old_export/wtiny-fp16-dmmha")
-    # model = og.Model("/datadisks/disk4/kvaishnavi/whisper/old_export/wtiny-fp32")
+    # model = og.Model("/home/kvaishnavi/whisper/old_export/wtiny-fp16-dmmha")
+    # model = og.Model("/home/kvaishnavi/whisper/old_export/wtiny-fp32")
 
     writer = get_writer(output_format, output_dir)
     word_options = [
