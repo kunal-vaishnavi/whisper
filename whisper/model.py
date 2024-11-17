@@ -347,14 +347,16 @@ class WhisperONNX(nn.Module):
 
         # Create new generator params
         params = og.GeneratorParams(self.model)
-        params.audio_features = audio_features.detach().cpu().numpy()
+        params.audio_features = np.ascontiguousarray(audio_features.detach().cpu().numpy())
         # print(params.audio_features)
         # import numpy as np
         # params.audio_features = np.load("/datadisks/disk4/kvaishnavi/whisper/input_features_from_hf.npy").astype(np.float16)
 
         params.input_ids = input_ids.detach().cpu().numpy()
         if audio_features.dtype == torch.float16:
-            params.alignment_heads = self.alignment_heads.detach().cpu().numpy().astype(np.int32)
+            # params.alignment_heads = np.ascontiguousarray(np.array([[1,1],[1,1],[1,1],[1,1],[1,1],[1,1]]))
+            params.alignment_heads = np.ascontiguousarray(self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
+            # import pdb; pdb.set_trace()
         if search_options != {}:
             params.set_search_options(**search_options)
 

@@ -274,7 +274,7 @@ def find_alignment(
     print('get cross qk')
     QKs = torch.from_numpy(model.generator.get_output("cross_qk")).to(torch.float32)
     print(QKs.shape)
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
 
     # re-run inference to get logits for all tokens ([batch_size, prompt_length + decoded_length, vocab_size]),
     # not just the logits for the last token ([batch_size, 1, vocab_size])
