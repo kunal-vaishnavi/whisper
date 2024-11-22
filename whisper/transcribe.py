@@ -271,7 +271,6 @@ def transcribe(
             mel_segment = mel[:, seek : seek + segment_size]
             segment_duration = segment_size * HOP_LENGTH / SAMPLE_RATE
             mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(model.device).to(dtype)
-            print(mel_segment.flatten())
 
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
             result: DecodingResult = decode_with_fallback(mel_segment)

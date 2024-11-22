@@ -550,16 +550,16 @@ class SuppressBlank(LogitFilter):
             logits[:, self.tokenizer.encode(" ") + [self.tokenizer.eot]] = -np.inf
 
 
-class SuppressBlankONNX(LogitFilter):
-    def __init__(self, tokenizer: Tokenizer, sample_begin: int):
-        self.tokenizer = tokenizer
-        self.sample_begin = sample_begin
+# class SuppressBlankONNX(LogitFilter):
+#     def __init__(self, tokenizer: Tokenizer, sample_begin: int):
+#         self.tokenizer = tokenizer
+#         self.sample_begin = sample_begin
 
-    def apply(self, logits: Tensor, tokens: Tensor):
-        """
-        Not needed for ONNX inference
-        """
-        pass
+#     def apply(self, logits: Tensor, tokens: Tensor):
+#         """
+#         Not needed for ONNX inference
+#         """
+#         pass
 
 
 class SuppressTokens(LogitFilter):
@@ -570,15 +570,15 @@ class SuppressTokens(LogitFilter):
         logits[:, self.suppress_tokens] = -np.inf
 
 
-class SuppressTokensONNX(LogitFilter):
-    def __init__(self, suppress_tokens: Sequence[int]):
-        self.suppress_tokens = list(suppress_tokens)
+# class SuppressTokensONNX(LogitFilter):
+#     def __init__(self, suppress_tokens: Sequence[int]):
+#         self.suppress_tokens = list(suppress_tokens)
 
-    def apply(self, logits: Tensor, tokens: Tensor):
-        """
-        Not needed for ONNX inference
-        """
-        pass
+#     def apply(self, logits: Tensor, tokens: Tensor):
+#         """
+#         Not needed for ONNX inference
+#         """
+#         pass
 
 
 class ApplyTimestampRules(LogitFilter):
@@ -648,22 +648,22 @@ class ApplyTimestampRules(LogitFilter):
                 logits[k, : self.tokenizer.timestamp_begin] = -np.inf
 
 
-class ApplyTimestampRulesONNX(LogitFilter):
-    def __init__(
-        self,
-        tokenizer: Tokenizer,
-        sample_begin: int,
-        max_initial_timestamp_index: Optional[int],
-    ):
-        self.tokenizer = tokenizer
-        self.sample_begin = sample_begin
-        self.max_initial_timestamp_index = max_initial_timestamp_index
+# class ApplyTimestampRulesONNX(LogitFilter):
+#     def __init__(
+#         self,
+#         tokenizer: Tokenizer,
+#         sample_begin: int,
+#         max_initial_timestamp_index: Optional[int],
+#     ):
+#         self.tokenizer = tokenizer
+#         self.sample_begin = sample_begin
+#         self.max_initial_timestamp_index = max_initial_timestamp_index
 
-    def apply(self, logits: Tensor, tokens: Tensor):
-        """
-        Not needed for ONNX inference
-        """
-        pass
+#     def apply(self, logits: Tensor, tokens: Tensor):
+#         """
+#         Not needed for ONNX inference
+#         """
+#         pass
 
 
 class DecodingTask:
@@ -714,9 +714,9 @@ class DecodingTask:
         # logit filters: applies various rules to suppress or penalize certain tokens
         self.logit_filters = []
         if self.options.suppress_blank:
-            self.logit_filters.append(SuppressBlankONNX(self.tokenizer, self.sample_begin))
+            self.logit_filters.append(SuppressBlank(self.tokenizer, self.sample_begin))
         if self.options.suppress_tokens:
-            self.logit_filters.append(SuppressTokensONNX(self._get_suppress_tokens()))
+            self.logit_filters.append(SuppressTokens(self._get_suppress_tokens()))
         if not options.without_timestamps:
             precision = CHUNK_LENGTH / model.dims.n_audio_ctx  # usually 0.02 seconds
             max_initial_timestamp_index = None
@@ -725,7 +725,7 @@ class DecodingTask:
                     self.options.max_initial_timestamp / precision
                 )
             self.logit_filters.append(
-                ApplyTimestampRulesONNX(
+                ApplyTimestampRules(
                     tokenizer, self.sample_begin, max_initial_timestamp_index
                 )
             )
@@ -771,6 +771,7 @@ class DecodingTask:
                 + tokens
             )
 
+        # print("ORT tokens:", tokens)
         return tuple(tokens)
 
     def _get_suppress_tokens(self) -> Tuple[int]:
@@ -929,6 +930,7 @@ class DecodingTask:
         self.inference.model.generator.generate_next_token()  # generate next token since encoder-decoder-init already ran
         try:
             # import pdb; pdb.set_trace()
+            # idx = 0
             while not self.inference.is_done():
                 logits = self.inference.logits(tokens, mel)
 
@@ -939,8 +941,20 @@ class DecodingTask:
                 # logits = logits[:, -1]
 
                 # # apply the logit filters, e.g. for suppressing or applying penalty to
-                # for logit_filter in self.logit_filters:
-                #     logit_filter.apply(logits, tokens)
+                # for i in range(logits.shape[0]):
+                #     for logit_filter in self.logit_filters:
+                #         logit_filter.apply(logits[i], tokens)
+
+                # Set modified logits back to ONNX Runtime GenAI
+                # for b in range(logits.shape[0]):
+                #     for s in range(logits.shape[1]):
+                #         for v in range(logits.shape[2]):
+                #             if idx == v:
+                #                 logits[b][s][v] = 1
+                #             else:
+                #                 logits[b][s][v] = 0
+                # idx += 1
+                # self.inference.model.generator.set_logits(logits.detach().cpu().numpy())
 
                 # # expand the tokens tensor with the selected next tokens
                 # tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)

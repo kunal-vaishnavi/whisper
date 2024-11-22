@@ -350,7 +350,7 @@ class WhisperONNX(nn.Module):
         params.audio_features = np.ascontiguousarray(audio_features.detach().cpu().numpy())
         # print(params.audio_features)
         # import numpy as np
-        # params.audio_features = np.load("/datadisks/disk4/kvaishnavi/whisper/input_features_from_hf.npy").astype(np.float16)
+        # params.audio_features = np.load("/home/kvaishnavi/whisper/input_features_from_hf.npy").astype(np.float16)
 
         params.input_ids = input_ids.detach().cpu().numpy()
         if audio_features.dtype == torch.float16:
