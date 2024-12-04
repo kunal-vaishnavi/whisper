@@ -13,7 +13,7 @@ from decoding import detect_language as detect_language_function
 from transcribe import transcribe as transcribe_function
 
 import onnxruntime_genai as og
-og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
+# og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
 
 
 @dataclass

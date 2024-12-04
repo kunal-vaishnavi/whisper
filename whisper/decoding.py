@@ -550,35 +550,12 @@ class SuppressBlank(LogitFilter):
             logits[:, self.tokenizer.encode(" ") + [self.tokenizer.eot]] = -np.inf
 
 
-# class SuppressBlankONNX(LogitFilter):
-#     def __init__(self, tokenizer: Tokenizer, sample_begin: int):
-#         self.tokenizer = tokenizer
-#         self.sample_begin = sample_begin
-
-#     def apply(self, logits: Tensor, tokens: Tensor):
-#         """
-#         Not needed for ONNX inference
-#         """
-#         pass
-
-
 class SuppressTokens(LogitFilter):
     def __init__(self, suppress_tokens: Sequence[int]):
         self.suppress_tokens = list(suppress_tokens)
 
     def apply(self, logits: Tensor, tokens: Tensor):
         logits[:, self.suppress_tokens] = -np.inf
-
-
-# class SuppressTokensONNX(LogitFilter):
-#     def __init__(self, suppress_tokens: Sequence[int]):
-#         self.suppress_tokens = list(suppress_tokens)
-
-#     def apply(self, logits: Tensor, tokens: Tensor):
-#         """
-#         Not needed for ONNX inference
-#         """
-#         pass
 
 
 class ApplyTimestampRules(LogitFilter):
@@ -596,6 +573,7 @@ class ApplyTimestampRules(LogitFilter):
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
             logits[:, self.tokenizer.no_timestamps] = -np.inf
+        # print(f"logits after first if check in timestamp rules = {logits[0, 50545:50555]}")
 
         # timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
         for k in range(tokens.shape[0]):
@@ -625,6 +603,7 @@ class ApplyTimestampRules(LogitFilter):
                 else:
                     timestamp_last = timestamps[-1] + 1
                 logits[k, self.tokenizer.timestamp_begin : timestamp_last] = -np.inf
+        # print(f"logits after first for loop in timestamp rules = {logits[0, 50545:50555]}")
 
         if tokens.shape[1] == self.sample_begin:
             # suppress generating non-timestamp tokens at the beginning
@@ -636,6 +615,7 @@ class ApplyTimestampRules(LogitFilter):
                     self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
                 )
                 logits[:, last_allowed + 1 :] = -np.inf
+        # print(f"logits after second if check in timestamp rules = {logits[0, 50545:50555]}")
 
         # if sum of probability over timestamps is above any other token, sample timestamp
         logprobs = F.log_softmax(logits.float(), dim=-1)
@@ -646,24 +626,7 @@ class ApplyTimestampRules(LogitFilter):
             max_text_token_logprob = logprobs[k, : self.tokenizer.timestamp_begin].max()
             if timestamp_logprob > max_text_token_logprob:
                 logits[k, : self.tokenizer.timestamp_begin] = -np.inf
-
-
-# class ApplyTimestampRulesONNX(LogitFilter):
-#     def __init__(
-#         self,
-#         tokenizer: Tokenizer,
-#         sample_begin: int,
-#         max_initial_timestamp_index: Optional[int],
-#     ):
-#         self.tokenizer = tokenizer
-#         self.sample_begin = sample_begin
-#         self.max_initial_timestamp_index = max_initial_timestamp_index
-
-#     def apply(self, logits: Tensor, tokens: Tensor):
-#         """
-#         Not needed for ONNX inference
-#         """
-#         pass
+        # print(f"logits after second for loop in timestamp rules = {logits[0, 50545:50555]}")
 
 
 class DecodingTask:
@@ -915,66 +878,48 @@ class DecodingTask:
         sum_logprobs: Tensor = torch.zeros(n_batch, device=mel.device)
         no_speech_probs = [np.nan] * n_batch
 
-        ###################################################################################
-        # TODO: Comment once re-designed export is completed since encoder
-        # and decoder-init will be separate inference passes (e.g. model.encoder(...)
-        # and model.logits(...) instead of just model(...) as it currently is)
-
-        # Encoder-decoder-init has already run so the no_speech_probs can be calculated
-        if self.tokenizer.no_speech is not None:  # save no_speech_probs
-            logits = torch.from_numpy(self.inference.model.generator.get_output("logits"))  # logits from encoder-decoder-init
-            probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
-            no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
-        ###################################################################################
-        
-        self.inference.model.generator.generate_next_token()  # generate next token since encoder-decoder-init already ran
         try:
-            # import pdb; pdb.set_trace()
-            # idx = 0
-            while not self.inference.is_done():
-                logits = self.inference.logits(tokens, mel)
+            for i in range(self.sample_len):
+                if i == 0 and self.tokenizer.no_speech is not None:  # save no_speech_probs
+                    # Encoder-decoder-init has already run so the no_speech_probs can be calculated
+                    logits = torch.from_numpy(self.inference.model.generator.get_output("logits"))  # logits from encoder-decoder-init
+                    probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
+                    no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
+                else:
+                    logits = self.inference.logits(tokens, mel).to(torch.float32)
 
-                ###################################################################################
-                # TODO: Uncomment once ONNX Runtime GenAI supports logit filters
+                # now we need to consider the logits at the last token only
+                logits = logits[:, -1]
 
-                # # now we need to consider the logits at the last token only
-                # logits = logits[:, -1]
+                # apply the logit filters, e.g. for suppressing or applying penalty to
+                for logit_filter in self.logit_filters:
+                    # if i == 0: print(f"ort logits before = {logits[0, 50360:50370]}")
+                    # if i == 1: print(f"ort logits before = {logits[0, 435:445]}")
+                    # if i == 10: print(f"ort logits before = {logits[0, 50545:50555]}")
+                    # if i == 48: print(f"ort logits before = {logits[0, 50255:51010]}")
+                    logit_filter.apply(logits, tokens)
+                    # if i == 0: print(f"ort logits after = {logits[0, 50360:50370]}")
+                    # if i == 1: print(f"ort logits after = {logits[0, 435:445]}")
+                    # if i == 10: print(f"ort logits after = {logits[0, 50545:50555]}")
+                    # if i == 48: print(f"ort logits after = {logits[0, 50255:51010]}")
 
-                # # apply the logit filters, e.g. for suppressing or applying penalty to
-                # for i in range(logits.shape[0]):
-                #     for logit_filter in self.logit_filters:
-                #         logit_filter.apply(logits[i], tokens)
+                # set modified logits back to ONNX Runtime GenAI before generating new token
+                self.inference.model.generator.set_logits(logits.detach().cpu().numpy())
 
-                # Set modified logits back to ONNX Runtime GenAI
-                # for b in range(logits.shape[0]):
-                #     for s in range(logits.shape[1]):
-                #         for v in range(logits.shape[2]):
-                #             if idx == v:
-                #                 logits[b][s][v] = 1
-                #             else:
-                #                 logits[b][s][v] = 0
-                # idx += 1
-                # self.inference.model.generator.set_logits(logits.detach().cpu().numpy())
-
-                # # expand the tokens tensor with the selected next tokens
-                # tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
-
-                # if completed or tokens.shape[-1] > self.n_ctx:
-                #     break
-                ###################################################################################
-
-                ###################################################################################
-                # TODO: Comment once ONNX Runtime GenAI supports logit filters
-
-                # generate next token
+                # expand the tokens tensor with the selected next tokens
+                tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0)).unsqueeze(0)
+                print(f"tokens before = {tokens}")
                 self.inference.model.generator.generate_next_token()
-                ###################################################################################
+                tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0)).unsqueeze(0)
+                print(f"tokens after = {tokens}")
+
+                if self.inference.is_done() or tokens.shape[-1] > self.n_ctx:
+                    break
 
         finally:
-            # import pdb; pdb.set_trace()
             self.inference.cleanup_caching()
 
-        tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0))
+        # tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0))
         return tokens, sum_logprobs, no_speech_probs
     ###################################################################################
 
