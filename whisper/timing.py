@@ -269,10 +269,12 @@ def find_alignment(
             tokenizer.eot,
         ]
     ).to(model.device)
+    print(f"tokens used for timestamps = {tokens}")
 
     # get final combined cross QK tensor from generation loop
     # print("get cross qk")
-    # QKs = torch.from_numpy(model.generator.get_output("cross_qk")).to(torch.float32)
+    QKs = torch.from_numpy(model.generator.get_output("cross_qk")).to(torch.float32)
+    np.save("/home/kvaishnavi/whisper/QKs/genai_cross_qk_weights.npy", QKs.detach().cpu().numpy())
     # print(QKs.shape)
     # import pdb; pdb.set_trace()
 
@@ -292,17 +294,27 @@ def find_alignment(
     # heads * tokens * frames
     QKs = [torch.from_numpy(model.generator.get_output(f"output_cross_qk_{idx}")).to(dtype=torch.float32, device=mel.device) for idx in range(model.dims.n_text_layer)]
     # QKs[layer_dim][batch_dim][head_dim][seqlen_dim][frames_dim]
+    for i in range(model.dims.n_text_layer):
+        np.save(f"/home/kvaishnavi/whisper/QKs/ort_cross_qk_{i}_weights.npy", QKs[i].detach().cpu().numpy())
+
     print(f"QKs length = {len(QKs)}")
     print(f"QKs[0] shape = {QKs[0].shape}")
     print(f"QKs[0][0] shape = {QKs[0][0].shape}")
     print(f"QKs[0][0][2] shape = {QKs[0][0][2].shape}")
+
+    print("Alignment heads:")
+    for _l, _h in model.alignment_heads.T:
+        print(f"({_l}, {_h})")
+
     weights = torch.stack([QKs[_l][:, _h] for _l, _h in model.alignment_heads.T])
     print(f"stacked QK shape = {weights.shape}")
     # weights = weights.transpose(0, 1).reshape([-1, *weights.shape[2:]])  # switch layer_dim and batch_dim
     weights = weights.reshape([-1, *weights.shape[2:]])
     print(f"stacked QK new shape = {weights.shape}")
+    np.save("/home/kvaishnavi/whisper/QKs/ort_stacked_cross_qk_weights.npy", weights.detach().cpu().numpy())
     weights = weights[:, :, : num_frames // 2]
     print(f"stacked QK new shape sliced = {weights.shape}")
+    np.save("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy", weights.detach().cpu().numpy())
 
     # PyTorch:
     # tensor([[50258, 50259, 50359, 50364,   440,  1723,   322,   702,  7443,   920,
@@ -320,18 +332,18 @@ def find_alignment(
     #          3337,   327,   530,   406,  3163, 50964, 50964,  1953,   466,    13,
     #          51006, 50257]], device='cuda:0')
 
-    # weights = QKs.reshape([*QKs.shape[2:]])
-    # print("QKs:")
-    # print(weights)
-    # weights = torch.from_numpy(np.load("/home/kvaishnavi/whisper/cross_qk_weights.npy"))
+    weights = torch.from_numpy(np.load("/home/kvaishnavi/whisper/QKs/pt_cross_qk_weights.npy"))
     weights = (weights * qk_scale).softmax(dim=-1)
     std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
     weights = (weights - mean) / std
     weights = median_filter(weights, medfilt_width)
+    np.save("/home/kvaishnavi/whisper/QKs/ort_after_med_filter.npy", weights.detach().cpu().numpy())
 
     matrix = weights.mean(axis=0)
-    matrix = matrix[:, len(tokenizer.sot_sequence) : -1]
+    matrix = matrix[len(tokenizer.sot_sequence) : -1]
+    np.save("/home/kvaishnavi/whisper/QKs/ort_matrix_before_dtw.npy", matrix.detach().cpu().numpy())
     text_indices, time_indices = dtw(-matrix)
+    print(f"DTW results: \n{text_indices}\n{time_indices}")
 
     words, word_tokens = tokenizer.split_to_word_tokens(text_tokens + [tokenizer.eot])
     if len(word_tokens) <= 1:

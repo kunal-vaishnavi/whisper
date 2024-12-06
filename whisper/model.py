@@ -324,6 +324,7 @@ class WhisperONNX(nn.Module):
         self.model = og.Model(path)
         self.device = torch.device(device)
         self.idx = 0
+        self.fp16 = "fp16" in path
 
     def set_alignment_heads(self, dump: bytes):
         array = np.frombuffer(
@@ -347,16 +348,9 @@ class WhisperONNX(nn.Module):
 
         # Create new generator params
         params = og.GeneratorParams(self.model)
-        params.audio_features = np.ascontiguousarray(audio_features.detach().cpu().numpy())
-        # print(params.audio_features)
-        # import numpy as np
-        # params.audio_features = np.load("/home/kvaishnavi/whisper/input_features_from_hf.npy").astype(np.float16)
-
+        params.audio_features = np.ascontiguousarray(audio_features.detach().cpu().numpy().astype(np.float16 if self.fp16 else np.float32))
+        params.alignment_heads = np.ascontiguousarray(self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
         params.input_ids = input_ids.detach().cpu().numpy()
-        if audio_features.dtype == torch.float16:
-            # params.alignment_heads = np.ascontiguousarray(np.array([[1,1],[1,1],[1,1],[1,1],[1,1],[1,1]]))
-            params.alignment_heads = np.ascontiguousarray(self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
-            # import pdb; pdb.set_trace()
         if search_options != {}:
             params.set_search_options(**search_options)
 
