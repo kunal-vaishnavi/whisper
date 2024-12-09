@@ -314,7 +314,7 @@ def find_alignment(
     np.save("/home/kvaishnavi/whisper/QKs/ort_stacked_cross_qk_weights.npy", weights.detach().cpu().numpy())
     weights = weights[:, :, : num_frames // 2]
     print(f"stacked QK new shape sliced = {weights.shape}")
-    np.save("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy", weights.detach().cpu().numpy())
+    # np.save("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy", weights.detach().cpu().numpy())
 
     # PyTorch:
     # tensor([[50258, 50259, 50359, 50364,   440,  1723,   322,   702,  7443,   920,
@@ -332,7 +332,7 @@ def find_alignment(
     #          3337,   327,   530,   406,  3163, 50964, 50964,  1953,   466,    13,
     #          51006, 50257]], device='cuda:0')
 
-    weights = torch.from_numpy(np.load("/home/kvaishnavi/whisper/QKs/pt_cross_qk_weights.npy"))
+    # weights = torch.from_numpy(np.load("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy"))
     weights = (weights * qk_scale).softmax(dim=-1)
     std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
     weights = (weights - mean) / std

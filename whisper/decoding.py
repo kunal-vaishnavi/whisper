@@ -789,10 +789,10 @@ class DecodingTask:
 
                 # expand the tokens tensor with the selected next tokens
                 tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0)).unsqueeze(0).to(device=logits.device)
-                print(f"tokens before = {tokens}")
+                # print(f"tokens before = {tokens}")
                 self.inference.model.generator.generate_next_token()
                 tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0)).unsqueeze(0).to(device=logits.device)
-                print(f"tokens after = {tokens}")
+                # print(f"tokens after = {tokens}")
                 self.decoder.update(tokens, logits, sum_logprobs)
 
                 if self.inference.is_done() or tokens.shape[-1] > self.n_ctx:
