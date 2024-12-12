@@ -157,97 +157,6 @@ class WordTiming:
     probability: float
 
 
-###################################################################################
-# TODO: Uncomment once re-designed export is completed since encoder
-# and decoder-init will be separate inference passes (e.g. model.encoder(...)
-# and model.logits(...) instead of just model(...) as it currently is)
-
-# def find_alignment(
-#     model: "Whisper",
-#     tokenizer: Tokenizer,
-#     text_tokens: List[int],
-#     mel: torch.Tensor,
-#     num_frames: int,
-#     *,
-#     medfilt_width: int = 7,
-#     qk_scale: float = 1.0,
-# ) -> List[WordTiming]:
-#     if len(text_tokens) == 0:
-#         return []
-
-#     tokens = torch.tensor(
-#         [
-#             *tokenizer.sot_sequence,
-#             tokenizer.no_timestamps,
-#             *text_tokens,
-#             tokenizer.eot,
-#         ]
-#     ).to(model.device)
-
-#     # install hooks on the cross attention layers to retrieve the attention weights
-#     QKs = [None] * model.dims.n_text_layer
-#     hooks = [
-#         block.cross_attn.register_forward_hook(
-#             lambda _, ins, outs, index=i: QKs.__setitem__(index, outs[-1][0])
-#         )
-#         for i, block in enumerate(model.decoder.blocks)
-#     ]
-
-#     with torch.no_grad():
-#         logits = model(mel.unsqueeze(0), tokens.unsqueeze(0))[0]
-#         sampled_logits = logits[len(tokenizer.sot_sequence) :, : tokenizer.eot]
-#         token_probs = sampled_logits.softmax(dim=-1)
-#         text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
-#         text_token_probs = text_token_probs.tolist()
-
-#     for hook in hooks:
-#         hook.remove()
-
-#     # heads * tokens * frames
-#     weights = torch.stack([QKs[_l][_h] for _l, _h in model.alignment_heads.indices().T])
-#     weights = weights[:, :, : num_frames // 2]
-#     weights = (weights * qk_scale).softmax(dim=-1)
-#     std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
-#     weights = (weights - mean) / std
-#     weights = median_filter(weights, medfilt_width)
-
-#     matrix = weights.mean(axis=0)
-#     matrix = matrix[len(tokenizer.sot_sequence) : -1]
-#     text_indices, time_indices = dtw(-matrix)
-
-#     words, word_tokens = tokenizer.split_to_word_tokens(text_tokens + [tokenizer.eot])
-#     if len(word_tokens) <= 1:
-#         # return on eot only
-#         # >>> np.pad([], (1, 0))
-#         # array([0.])
-#         # This results in crashes when we lookup jump_times with float, like
-#         # IndexError: arrays used as indices must be of integer (or boolean) type
-#         return []
-#     word_boundaries = np.pad(np.cumsum([len(t) for t in word_tokens[:-1]]), (1, 0))
-
-#     jumps = np.pad(np.diff(text_indices), (1, 0), constant_values=1).astype(bool)
-#     jump_times = time_indices[jumps] / TOKENS_PER_SECOND
-#     start_times = jump_times[word_boundaries[:-1]]
-#     end_times = jump_times[word_boundaries[1:]]
-#     word_probabilities = [
-#         np.mean(text_token_probs[i:j])
-#         for i, j in zip(word_boundaries[:-1], word_boundaries[1:])
-#     ]
-
-#     return [
-#         WordTiming(word, tokens, start, end, probability)
-#         for word, tokens, start, end, probability in zip(
-#             words, word_tokens, start_times, end_times, word_probabilities
-#         )
-#     ]
-###################################################################################
-
-
-###################################################################################
-# TODO: Comment once re-designed export is completed since encoder
-# and decoder-init will be separate inference passes (e.g. model.encoder(...)
-# and model.logits(...) instead of just model(...) as it currently is)
-
 def find_alignment(
     model: "WhisperONNX",
     tokenizer: Tokenizer,
@@ -269,14 +178,13 @@ def find_alignment(
             tokenizer.eot,
         ]
     ).to(model.device)
-    print(f"tokens used for timestamps = {tokens}")
+    # print(f"tokens used for timestamps = {tokens}")
 
     # get final combined cross QK tensor from generation loop
     # print("get cross qk")
-    QKs = torch.from_numpy(model.generator.get_output("cross_qk")).to(torch.float32)
-    np.save("/home/kvaishnavi/whisper/QKs/genai_cross_qk_weights.npy", QKs.detach().cpu().numpy())
+    # QKs = torch.from_numpy(model.generator.get_output("cross_qk")).to(torch.float32)
+    # np.save("/home/kvaishnavi/whisper/QKs/genai_cross_qk_weights.npy", QKs.detach().cpu().numpy())
     # print(QKs.shape)
-    # import pdb; pdb.set_trace()
 
     # re-run inference to get logits for all tokens ([batch_size, prompt_length + decoded_length, vocab_size]),
     # not just the logits for the last token ([batch_size, 1, vocab_size])
@@ -287,13 +195,9 @@ def find_alignment(
         text_token_probs = token_probs[np.arange(len(text_tokens)), text_tokens]
         text_token_probs = text_token_probs.tolist()
 
-    # text_token_probs:
-    # PT: [0.7890558242, 0.152467235922, 0.63745307922, 0.97963619232, 0.998051166, 0.51488977670, 0.97223603, 0.99275922775, 0.7263591, 0.97823899984, 0.853136003, 0.99160039424, 0.99617552, 0.54236465692, 0.5426307320, 0.346207231283, 0.9500872492, 0.701448976, 0.98865228891, 0.4968730807, 0.66240823268, 0.9679544568, 0.9207713007, 0.97268670797, 0.9972301125, 0.94439017772, 0.73084712028, 0.9990655779, 0.985873699, 0.99188846349, 0.68298316001, 0.4589944481, 0.90137696266, 0.464057654, 0.62091094255, 0.883975207, 0.99762409925, 0.99066585302, 0.9970781803, 0.96405315399]
-    # ORT: [0.7939453125, 0.155517578125, 0.63525390625, 0.97900390625, 0.998046875, 0.51904296875, 0.97265625, 0.99267578125, 0.7265625, 0.97900390625, 0.853515625, 0.99169921875, 0.99609375, 0.54248046875, 0.5419921875, 0.350830078125, 0.9501953125, 0.701171875, 0.98876953125, 0.4931640625, 0.66259765625, 0.9677734375, 0.9208984375, 0.97314453125, 0.9970703125, 0.94287109375, 0.73583984375, 0.9990234375, 0.986328125, 0.99169921875, 0.67822265625, 0.4599609375, 0.90087890625, 0.462890625, 0.61767578125, 0.880859375, 0.99755859375, 0.99072265625, 0.9970703125, 0.96435546875]
-
     # heads * tokens * frames
-    QKs = [torch.from_numpy(model.generator.get_output(f"output_cross_qk_{idx}")).to(dtype=torch.float32, device=mel.device) for idx in range(model.dims.n_text_layer)]
     # QKs[layer_dim][batch_dim][head_dim][seqlen_dim][frames_dim]
+    QKs = [torch.from_numpy(model.generator.get_output(f"output_cross_qk_{idx}")).to(dtype=torch.float32, device=mel.device) for idx in range(model.dims.n_text_layer)]
     for i in range(model.dims.n_text_layer):
         np.save(f"/home/kvaishnavi/whisper/QKs/ort_cross_qk_{i}_weights.npy", QKs[i].detach().cpu().numpy())
 
@@ -315,22 +219,6 @@ def find_alignment(
     weights = weights[:, :, : num_frames // 2]
     print(f"stacked QK new shape sliced = {weights.shape}")
     # np.save("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy", weights.detach().cpu().numpy())
-
-    # PyTorch:
-    # tensor([[50258, 50259, 50359, 50364,   440,  1723,   322,   702,  7443,   920,
-    #          37460,  3390,    13, 50552, 50552,   440, 29677,   295,   702, 48834,
-    #          7146,   274,  2346,    13, 50684, 50684,  2754,   264,   370,  1921,
-    #          18451,   926,   796,   365,  5383,   295,  6177,  3391,    11, 19817,
-    #          3337,   327,   530,   406,  3163, 50964, 50964,  1953,   466,    13,
-    #          51006, 50257]], device='cuda:0')
-
-    # ORT:
-    # tensor([[50258, 50259, 50359, 50364,   440,  1723,   322,   702,  7443,   920,
-    #          37460,  3390,    13, 50550, 50550,   440, 29677,   295,   702, 48834,
-    #          7146,   274,  2346,    13, 50684, 50684,  2754,   264,   370,  1921,
-    #          18451,   926,   796,   365,  5383,   295,  6177,  3391,    11, 19817,
-    #          3337,   327,   530,   406,  3163, 50964, 50964,  1953,   466,    13,
-    #          51006, 50257]], device='cuda:0')
 
     # weights = torch.from_numpy(np.load("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy"))
     weights = (weights * qk_scale).softmax(dim=-1)
@@ -370,7 +258,6 @@ def find_alignment(
             words, word_tokens, start_times, end_times, word_probabilities
         )
     ]
-###################################################################################
 
 
 def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: str):
