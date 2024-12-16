@@ -198,26 +198,26 @@ def find_alignment(
     # heads * tokens * frames
     # QKs[layer_dim][batch_dim][head_dim][seqlen_dim][frames_dim]
     QKs = [torch.from_numpy(model.generator.get_output(f"output_cross_qk_{idx}")).to(dtype=torch.float32, device=mel.device) for idx in range(model.dims.n_text_layer)]
-    for i in range(model.dims.n_text_layer):
-        np.save(f"/home/kvaishnavi/whisper/QKs/ort_cross_qk_{i}_weights.npy", QKs[i].detach().cpu().numpy())
+    # for i in range(model.dims.n_text_layer):
+    #     np.save(f"/home/kvaishnavi/whisper/QKs/ort_cross_qk_{i}_weights.npy", QKs[i].detach().cpu().numpy())
 
-    print(f"QKs length = {len(QKs)}")
-    print(f"QKs[0] shape = {QKs[0].shape}")
-    print(f"QKs[0][0] shape = {QKs[0][0].shape}")
-    print(f"QKs[0][0][2] shape = {QKs[0][0][2].shape}")
+    # print(f"QKs length = {len(QKs)}")
+    # print(f"QKs[0] shape = {QKs[0].shape}")
+    # print(f"QKs[0][0] shape = {QKs[0][0].shape}")
+    # print(f"QKs[0][0][2] shape = {QKs[0][0][2].shape}")
 
-    print("Alignment heads:")
-    for _l, _h in model.alignment_heads.T:
-        print(f"({_l}, {_h})")
+    # print("Alignment heads:")
+    # for _l, _h in model.alignment_heads.T:
+    #     print(f"({_l}, {_h})")
 
     weights = torch.stack([QKs[_l][:, _h] for _l, _h in model.alignment_heads.T])
-    print(f"stacked QK shape = {weights.shape}")
+    # print(f"stacked QK shape = {weights.shape}")
     # weights = weights.transpose(0, 1).reshape([-1, *weights.shape[2:]])  # switch layer_dim and batch_dim
     weights = weights.reshape([-1, *weights.shape[2:]])
-    print(f"stacked QK new shape = {weights.shape}")
-    np.save("/home/kvaishnavi/whisper/QKs/ort_stacked_cross_qk_weights.npy", weights.detach().cpu().numpy())
+    # print(f"stacked QK new shape = {weights.shape}")
+    # np.save("/home/kvaishnavi/whisper/QKs/ort_stacked_cross_qk_weights.npy", weights.detach().cpu().numpy())
     weights = weights[:, :, : num_frames // 2]
-    print(f"stacked QK new shape sliced = {weights.shape}")
+    # print(f"stacked QK new shape sliced = {weights.shape}")
     # np.save("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy", weights.detach().cpu().numpy())
 
     # weights = torch.from_numpy(np.load("/home/kvaishnavi/whisper/QKs/ort_cross_qk_weights.npy"))
@@ -225,13 +225,13 @@ def find_alignment(
     std, mean = torch.std_mean(weights, dim=-2, keepdim=True, unbiased=False)
     weights = (weights - mean) / std
     weights = median_filter(weights, medfilt_width)
-    np.save("/home/kvaishnavi/whisper/QKs/ort_after_med_filter.npy", weights.detach().cpu().numpy())
+    # np.save("/home/kvaishnavi/whisper/QKs/ort_after_med_filter.npy", weights.detach().cpu().numpy())
 
     matrix = weights.mean(axis=0)
     matrix = matrix[len(tokenizer.sot_sequence) : -1]
-    np.save("/home/kvaishnavi/whisper/QKs/ort_matrix_before_dtw.npy", matrix.detach().cpu().numpy())
+    # np.save("/home/kvaishnavi/whisper/QKs/ort_matrix_before_dtw.npy", matrix.detach().cpu().numpy())
     text_indices, time_indices = dtw(-matrix)
-    print(f"DTW results: \n{text_indices}\n{time_indices}")
+    # print(f"DTW results: \n{text_indices}\n{time_indices}")
 
     words, word_tokens = tokenizer.split_to_word_tokens(text_tokens + [tokenizer.eot])
     if len(word_tokens) <= 1:
@@ -245,6 +245,7 @@ def find_alignment(
 
     jumps = np.pad(np.diff(text_indices), (1, 0), constant_values=1).astype(bool)
     jump_times = time_indices[jumps] / TOKENS_PER_SECOND
+    # print(jump_times)
     start_times = jump_times[word_boundaries[:-1]]
     end_times = jump_times[word_boundaries[1:]]
     word_probabilities = [
@@ -306,12 +307,12 @@ def add_word_timestamps(
     last_speech_timestamp: float,
     **kwargs,
 ):
-    all_tokens_per_segment = []
-    for segment in segments:
-        for token in segment["tokens"]:
-            all_tokens_per_segment.append(token)
-    print(all_tokens_per_segment)
-    print(tokenizer.decode_with_timestamps(all_tokens_per_segment))
+    # all_tokens_per_segment = []
+    # for segment in segments:
+    #     for token in segment["tokens"]:
+    #         all_tokens_per_segment.append(token)
+    # print(all_tokens_per_segment)
+    # print(tokenizer.decode_with_timestamps(all_tokens_per_segment))
 
     if len(segments) == 0:
         return
