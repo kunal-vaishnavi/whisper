@@ -525,7 +525,6 @@ class ApplyTimestampRules(LogitFilter):
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
             logits[:, self.tokenizer.no_timestamps] = -np.inf
-        # print(f"logits after first if check in timestamp rules = {logits[0, 50545:50555]}")
 
         # timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
         for k in range(tokens.shape[0]):
@@ -555,7 +554,6 @@ class ApplyTimestampRules(LogitFilter):
                 else:
                     timestamp_last = timestamps[-1] + 1
                 logits[k, self.tokenizer.timestamp_begin : timestamp_last] = -np.inf
-        # print(f"logits after first for loop in timestamp rules = {logits[0, 50545:50555]}")
 
         if tokens.shape[1] == self.sample_begin:
             # suppress generating non-timestamp tokens at the beginning
@@ -567,7 +565,6 @@ class ApplyTimestampRules(LogitFilter):
                     self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
                 )
                 logits[:, last_allowed + 1 :] = -np.inf
-        # print(f"logits after second if check in timestamp rules = {logits[0, 50545:50555]}")
 
         # if sum of probability over timestamps is above any other token, sample timestamp
         logprobs = F.log_softmax(logits.float(), dim=-1)
@@ -578,7 +575,6 @@ class ApplyTimestampRules(LogitFilter):
             max_text_token_logprob = logprobs[k, : self.tokenizer.timestamp_begin].max()
             if timestamp_logprob > max_text_token_logprob:
                 logits[k, : self.tokenizer.timestamp_begin] = -np.inf
-        # print(f"logits after second for loop in timestamp rules = {logits[0, 50545:50555]}")
 
 
 class DecodingTask:
@@ -686,7 +682,6 @@ class DecodingTask:
                 + tokens
             )
 
-        # print("ORT tokens:", tokens)
         return tuple(tokens)
 
     def _get_suppress_tokens(self) -> Tuple[int]:
@@ -774,25 +769,15 @@ class DecodingTask:
 
                 # apply the logit filters, e.g. for suppressing or applying penalty to
                 for logit_filter in self.logit_filters:
-                    # if i == 0: print(f"ort logits before = {logits[0, 50360:50370]}")
-                    # if i == 1: print(f"ort logits before = {logits[0, 435:445]}")
-                    # if i == 10: print(f"ort logits before = {logits[0, 50545:50555]}")
-                    # if i == 48: print(f"ort logits before = {logits[0, 50255:51010]}")
                     logit_filter.apply(logits, tokens)
-                    # if i == 0: print(f"ort logits after = {logits[0, 50360:50370]}")
-                    # if i == 1: print(f"ort logits after = {logits[0, 435:445]}")
-                    # if i == 10: print(f"ort logits after = {logits[0, 50545:50555]}")
-                    # if i == 48: print(f"ort logits after = {logits[0, 50255:51010]}")
 
                 # set modified logits back to ONNX Runtime GenAI before generating new token
                 self.inference.model.generator.set_logits(logits.detach().cpu().numpy())
 
                 # expand the tokens tensor with the selected next tokens
                 tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0)).unsqueeze(0).to(device=logits.device)
-                # print(f"tokens before = {tokens}")
                 self.inference.model.generator.generate_next_token()
                 tokens = torch.from_numpy(self.inference.model.generator.get_sequence(0)).unsqueeze(0).to(device=logits.device)
-                # print(f"tokens after = {tokens}")
                 self.decoder.update(tokens, logits, sum_logprobs)
 
                 if self.inference.is_done() or tokens.shape[-1] > self.n_ctx:
@@ -802,96 +787,6 @@ class DecodingTask:
             self.inference.cleanup_caching()
 
         return tokens, sum_logprobs, no_speech_probs
-
-    ###################################################################################
-    # TODO: Uncomment once re-designed export is completed since encoder
-    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
-    # and model.logits(...) instead of just model(...) as it currently is)
-
-    # @torch.no_grad()
-    # def run(self, mel: Tensor) -> List[DecodingResult]:
-    #     self.decoder.reset()
-    #     tokenizer: Tokenizer = self.tokenizer
-    #     n_audio: int = mel.shape[0]
-
-    #     audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
-    #     tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
-
-    #     # detect language if requested, overwriting the language token
-    #     languages, language_probs = self._detect_language(audio_features, tokens)
-    #     if self.options.task == "lang_id":
-    #         return [
-    #             DecodingResult(
-    #                 audio_features=features, language=language, language_probs=probs
-    #             )
-    #             for features, language, probs in zip(
-    #                 audio_features, languages, language_probs
-    #             )
-    #         ]
-
-    #     # repeat text tensors by the group size, for beam search or best-of-n sampling
-    #     tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
-
-    #     # call the main sampling loop
-    #     tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
-
-    #     # reshape the tensors to have (n_audio, n_group) as the first two dimensions
-    #     audio_features = audio_features[:: self.n_group]
-    #     no_speech_probs = no_speech_probs[:: self.n_group]
-    #     assert audio_features.shape[0] == len(no_speech_probs) == n_audio
-
-    #     tokens = tokens.reshape(n_audio, self.n_group, -1)
-    #     sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
-
-    #     # get the final candidates for each group, and slice between the first sampled token and EOT
-    #     tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
-    #     tokens: List[List[Tensor]] = [
-    #         [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
-    #         for s in tokens
-    #     ]
-
-    #     # select the top-ranked sample in each group
-    #     selected = self.sequence_ranker.rank(tokens, sum_logprobs)
-    #     tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
-    #     texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
-
-    #     sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
-    #     avg_logprobs: List[float] = [
-    #         lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
-    #     ]
-
-    #     fields = (
-    #         texts,
-    #         languages,
-    #         tokens,
-    #         audio_features,
-    #         avg_logprobs,
-    #         no_speech_probs,
-    #     )
-    #     if len(set(map(len, fields))) != 1:
-    #         raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
-
-    #     return [
-    #         DecodingResult(
-    #             audio_features=features,
-    #             language=language,
-    #             tokens=tokens,
-    #             text=text,
-    #             avg_logprob=avg_logprob,
-    #             no_speech_prob=no_speech_prob,
-    #             temperature=self.options.temperature,
-    #             compression_ratio=compression_ratio(text),
-    #         )
-    #         for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
-    #             *fields
-    #         )
-    #     ]
-    ###################################################################################
-
-    ###################################################################################
-    # TODO: Comment once re-designed export is completed since encoder
-    # and decoder-init will be separate inference passes (e.g. model.encoder(...)
-    # and model.logits(...) instead of just model(...) as it currently is)
 
     @torch.no_grad()
     def run(self, mel: Tensor) -> List[DecodingResult]:
@@ -946,19 +841,6 @@ class DecodingTask:
             lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
         ]
 
-        # # create mask to remove prompt token ids and EOS token ids
-        # mask = torch.ones_like(tokens)
-        # mask[:, :, :self.sample_begin] = False  # don't pick elements before `self.sample_begin`
-        # eot_positions = (tokens == tokenizer.eot).nonzero(as_tuple=True)  # get indices of elements with a value of `EOS token id`
-        # mask[eot_positions] = False  # don't pick elements with a value of `EOS token id` 
-        
-        # # apply mask and choose first return sequence
-        # tokens = tokens.masked_select(mask.bool()).view(tokens.shape[0], tokens.shape[1], -1)
-        # tokens = tokens[:, 0, :]
-        
-        # # import pdb; pdb.set_trace()
-        # texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
-
         fields = (
             texts,
             languages,
@@ -985,7 +867,6 @@ class DecodingTask:
                 *fields
             )
         ]
-    ###################################################################################
 
 
 @torch.no_grad()

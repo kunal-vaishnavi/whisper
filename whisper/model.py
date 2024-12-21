@@ -323,7 +323,6 @@ class WhisperONNX(nn.Module):
         self.dims = dims
         self.model = og.Model(path)
         self.device = torch.device(device)
-        self.idx = 0
         self.fp16 = "fp16" in path
 
     def set_alignment_heads(self, dump: bytes):
@@ -340,9 +339,6 @@ class WhisperONNX(nn.Module):
         Sets fields for `og.Generator` object to prepare for
         generation loop
         """
-        # TODO: Change this once setting inputs during the generation loop
-        # is possible.
-
         # Delete old generator
         self.reset_inputs()
 
@@ -362,9 +358,6 @@ class WhisperONNX(nn.Module):
         Delete `og.Generator` object so a new `og.Generator` object
         can be constructed to set new inputs
         """
-        # TODO: Remove this method once re-using the same `og.Generator`
-        # object for multiple runs is possible
-
         if hasattr(self, "generator"):
             # Delete old generator to free memory
             del self.generator
@@ -383,16 +376,9 @@ class WhisperONNX(nn.Module):
         """
         Computes self.decoder(tokens, audio_features)
         """
-        # TODO: Change this once setting inputs during the generation loop
-        # is possible.
         print("logits called")
         self.generator.compute_logits()
-        # if self.idx == 9:
-        #     import pdb; pdb.set_trace()
         logits = self.generator.get_output("logits")
-        logits2 = self.generator.get_logits()
-        # np.save(f"/datadisks/disk4/kvaishnavi/whisper/get_logits/bad_logits_{self.idx}.npy", logits2)
-        self.idx += 1
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
     def forward(
@@ -405,18 +391,6 @@ class WhisperONNX(nn.Module):
         print("forward called")
         self.generator.compute_logits()
         logits = self.generator.get_output("logits")
-
-        # encoder_hidden_states = self.generator.get_output("encoder_hidden_states")
-        # np.save(f"/datadisks/disk4/kvaishnavi/whisper/ort_encoder_hidden_states.npy", encoder_hidden_states)
-
-        # for i in range(4):
-        #     key_name, val_name = f"present_key_cross_{i}", f"present_value_cross_{i}"
-        #     key = self.generator.get_output(key_name)
-        #     val = self.generator.get_output(val_name)
-
-        #     np.save(f"/datadisks/disk4/kvaishnavi/whisper/ort_{key_name}.npy", key)
-        #     np.save(f"/datadisks/disk4/kvaishnavi/whisper/ort_{val_name}.npy", val)
-
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
     def encoder(self, mel: torch.Tensor, tokens: torch.Tensor):
