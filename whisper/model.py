@@ -367,7 +367,7 @@ class WhisperONNX(nn.Module):
         Computes self.encoder(mel)
         """
         self.set_inputs(mel, tokens)
-        print("embed_audio called")
+        # print("embed_audio called")
         self.generator.compute_logits()
         encoder_hidden_states = self.generator.get_output("encoder_hidden_states")
         return torch.from_numpy(encoder_hidden_states).to(dtype=mel.dtype, device=self.device)
@@ -376,7 +376,7 @@ class WhisperONNX(nn.Module):
         """
         Computes self.decoder(tokens, audio_features)
         """
-        print("logits called")
+        # print("logits called")
         self.generator.compute_logits()
         logits = self.generator.get_output("logits")
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
@@ -388,7 +388,7 @@ class WhisperONNX(nn.Module):
         Computes self.decoder(tokens, self.encoder(mel))
         """
         self.set_inputs(mel, tokens)
-        print("forward called")
+        # print("forward called")
         self.generator.compute_logits()
         logits = self.generator.get_output("logits")
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
