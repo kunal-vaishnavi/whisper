@@ -324,6 +324,7 @@ class WhisperONNX(nn.Module):
         self.model = og.Model(path)
         self.device = torch.device(device)
         self.fp16 = "fp16" in path
+        self.batch_size = 1  # will be overwritten in DecodingTask
 
     def set_alignment_heads(self, dump: bytes):
         array = np.frombuffer(
@@ -344,7 +345,11 @@ class WhisperONNX(nn.Module):
 
         # Create new generator params
         params = og.GeneratorParams(self.model)
-        params.audio_features = np.ascontiguousarray(audio_features.detach().cpu().numpy().astype(np.float16 if self.fp16 else np.float32))
+        params.audio_features = np.ascontiguousarray(
+            torch.cat(
+                [audio_features for _ in range(self.batch_size)], dim=0
+            ).detach().cpu().numpy().astype(np.float16 if self.fp16 else np.float32)
+        )
         params.alignment_heads = np.ascontiguousarray(self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
         params.input_ids = input_ids.detach().cpu().numpy()
         if search_options != {}:

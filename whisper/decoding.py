@@ -108,6 +108,8 @@ class DecodingOptions:
     # implementation details
     fp16: bool = True  # use fp16 for most of the calculation
 
+    batch_size: int = 1
+
 
 @dataclass(frozen=True)
 class DecodingResult:
@@ -228,7 +230,11 @@ class MaximumLikelihoodRanker(SequenceRanker):
                 else:
                     # from the Google NMT paper
                     penalty = ((5 + length) / 6) ** self.length_penalty
-                result.append(logprob / penalty)
+
+                res = logprob / penalty
+                if isinstance(res, torch.Tensor):
+                    res = res.detach().cpu().item()
+                result.append(res)
             return result
 
         # get the sequence with the highest score
@@ -585,6 +591,7 @@ class DecodingTask:
 
     def __init__(self, model: "WhisperONNX", options: DecodingOptions):
         self.model = model
+        self.model.batch_size = options.batch_size
 
         language = options.language or "en"
         tokenizer = get_tokenizer(
@@ -812,9 +819,14 @@ class DecodingTask:
 
         # repeat text tensors by the group size, for beam search or best-of-n sampling
         tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
+        print(f"tokens shape: {tokens.shape}")
 
         # call the main sampling loop
+        import time
+        start_time = time.time()
         tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
+        ort_time_cost = (time.time() - start_time)
+        print("\t ORT: ", ort_time_cost, "s")
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         audio_features = audio_features[:: self.n_group]
@@ -840,6 +852,9 @@ class DecodingTask:
         avg_logprobs: List[float] = [
             lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
         ]
+
+        sum_logprobs = [sum_logprob.detach().cpu().item() if isinstance(sum_logprob, torch.Tensor) else sum_logprob for sum_logprob in sum_logprobs]
+        avg_logprobs = [avg_logprob.detach().cpu().item() if isinstance(avg_logprob, torch.Tensor) else avg_logprob for avg_logprob in avg_logprobs]
 
         fields = (
             texts,

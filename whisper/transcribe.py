@@ -509,6 +509,7 @@ def cli():
     # fmt: off
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("audio", nargs="+", type=str, help="audio file(s) to transcribe")
+    parser.add_argument("--onnx_model_dir", type=str, help="path to folder containing ONNX models, GenAI config, and pre-processing files")
     parser.add_argument("--model", default="small", type=valid_model_name, help="name of the Whisper model to use")
     parser.add_argument("--model_dir", type=str, default=None, help="the path to save model files; uses ~/.cache/whisper by default")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="device to use for PyTorch inference")
@@ -519,6 +520,7 @@ def cli():
     parser.add_argument("--task", type=str, default="transcribe", choices=["transcribe", "translate"], help="whether to perform X->X speech recognition ('transcribe') or X->English translation ('translate')")
     parser.add_argument("--language", type=str, default=None, choices=sorted(LANGUAGES.keys()) + sorted([k.title() for k in TO_LANGUAGE_CODE.keys()]), help="language spoken in the audio, specify None to perform language detection")
 
+    parser.add_argument("--batch_size", type=int, default=1, help="batch size to repeat audio file with")
     parser.add_argument("--temperature", type=float, default=0, help="temperature to use for sampling")
     parser.add_argument("--best_of", type=optional_int, default=5, help="number of candidates when sampling with non-zero temperature")
     parser.add_argument("--beam_size", type=optional_int, default=1, help="number of beams in beam search, only applicable when temperature is zero")
@@ -547,6 +549,7 @@ def cli():
     # fmt: on
 
     args = parser.parse_args().__dict__
+    onnx_model_dir: str = args.pop("onnx_model_dir")
     model_name: str = args.pop("model")
     model_dir: str = args.pop("model_dir")
     output_dir: str = args.pop("output_dir")
@@ -578,9 +581,10 @@ def cli():
     # os.environ["ORT_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
 
     # model = load_model(model_name, device=device, download_root=model_dir)
+    # model_path = "/home/kvaishnavi/whisper/new_export/wtiny-fp16"
+    # model = load_onnx_model(model_name, device, model_path, download_root=model_dir, in_memory=False)
 
-    model_path = "/home/kvaishnavi/whisper/new_export/wtiny-fp16"
-    model = load_onnx_model(model_name, device, model_path, download_root=model_dir, in_memory=False)
+    model = load_onnx_model(model_name, device, onnx_model_dir, download_root=model_dir, in_memory=False)
 
     writer = get_writer(output_format, output_dir)
     word_options = [
