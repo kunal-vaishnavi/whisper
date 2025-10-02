@@ -36,6 +36,7 @@ def transcribe(
     model: "WhisperONNX",
     audio: Union[str, np.ndarray, torch.Tensor],
     *,
+    batch_size: int,
     verbose: Optional[bool] = None,
     temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
     compression_ratio_threshold: Optional[float] = 2.4,
@@ -140,7 +141,9 @@ def transcribe(
                     "Detecting language using up to the first 30 seconds. Use `--language` to specify the language"
                 )
             mel_segment = pad_or_trim(mel, N_FRAMES).to(model.device).to(dtype)
+            mel_segment = torch.stack([mel_segment for _ in range(batch_size)], dim=0)  # add batch dim
             _, probs = model.detect_language(mel_segment)
+            probs = probs[0]  # ignore batch dim for benchmarking purposes since audios are identical across batch dim
             decode_options["language"] = max(probs, key=probs.get)
             if verbose is not None:
                 print(
@@ -180,16 +183,17 @@ def transcribe(
 
         for t in temperatures:
             kwargs = {**decode_options}
-            if t > 0:
-                # disable beam_size and patience when t > 0
-                kwargs.pop("beam_size", None)
-                kwargs.pop("patience", None)
-            else:
-                # disable best_of when t == 0
-                kwargs.pop("best_of", None)
+            # if t > 0:
+            #     # disable beam_size and patience when t > 0
+            #     kwargs.pop("beam_size", None)
+            #     kwargs.pop("patience", None)
+            # else:
+            #     # disable best_of when t == 0
+            #     kwargs.pop("best_of", None)
 
             options = DecodingOptions(**kwargs, temperature=t)
             decode_result = model.decode(segment, options)
+            decode_result = decode_result[0]  # ignore batch dim for benchmarking purposes since audios are identical across batch dim
 
             needs_fallback = False
             if (
@@ -273,6 +277,8 @@ def transcribe(
             mel_segment = pad_or_trim(mel_segment, N_FRAMES).to(model.device).to(dtype)
 
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
+            mel_segment = torch.stack([mel_segment for _ in range(batch_size)], dim=0)  # add batch dim
+            # import pdb; pdb.set_trace()
             result: DecodingResult = decode_with_fallback(mel_segment)
             # print(result)
             tokens = torch.tensor(result.tokens)
@@ -521,7 +527,7 @@ def cli():
     parser.add_argument("--language", type=str, default=None, choices=sorted(LANGUAGES.keys()) + sorted([k.title() for k in TO_LANGUAGE_CODE.keys()]), help="language spoken in the audio, specify None to perform language detection")
 
     parser.add_argument("--batch_size", type=int, default=1, help="batch size to repeat audio file with")
-    parser.add_argument("--temperature", type=float, default=0, help="temperature to use for sampling")
+    parser.add_argument("--temperature", type=float, default=1.0, help="temperature to use for sampling")
     parser.add_argument("--best_of", type=optional_int, default=5, help="number of candidates when sampling with non-zero temperature")
     parser.add_argument("--beam_size", type=optional_int, default=1, help="number of beams in beam search, only applicable when temperature is zero")
     parser.add_argument("--patience", type=float, default=None, help="optional patience value to use in beam decoding, as in https://arxiv.org/abs/2204.05424, the default (1.0) is equivalent to conventional beam search")
@@ -555,6 +561,7 @@ def cli():
     output_dir: str = args.pop("output_dir")
     output_format: str = args.pop("output_format")
     device: str = args.pop("device")
+    batch_size: int = args.pop("batch_size")
     os.makedirs(output_dir, exist_ok=True)
 
     if model_name.endswith(".en") and args["language"] not in {"en", "English"}:
@@ -604,7 +611,7 @@ def cli():
     writer_args = {arg: args.pop(arg) for arg in word_options}
     for audio_path in args.pop("audio"):
         try:
-            result = transcribe(model, audio_path, temperature=temperature, **args)
+            result = transcribe(model, audio_path, batch_size=batch_size, temperature=temperature, **args)
             writer(result, audio_path, **writer_args)
         except Exception as e:
             traceback.print_exc()

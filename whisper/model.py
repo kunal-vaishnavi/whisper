@@ -13,7 +13,7 @@ from decoding import detect_language as detect_language_function
 from transcribe import transcribe as transcribe_function
 
 import onnxruntime_genai as og
-# og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
+og.set_log_options(enabled=True, model_input_values=True, model_output_values=True, ansi_tags=False)
 
 
 @dataclass
@@ -324,7 +324,6 @@ class WhisperONNX(nn.Module):
         self.model = og.Model(path)
         self.device = torch.device(device)
         self.fp16 = "fp16" in path
-        self.batch_size = 1  # will be overwritten in DecodingTask
 
     def set_alignment_heads(self, dump: bytes):
         array = np.frombuffer(
@@ -335,7 +334,8 @@ class WhisperONNX(nn.Module):
         )
         self.alignment_heads = mask.to_sparse().indices()
 
-    def set_inputs(self, audio_features, input_ids, search_options={}):
+    def set_inputs(self, audio_features, input_ids, search_options):
+    # def set_inputs(self, audio_features, search_options):
         """
         Sets fields for `og.Generator` object to prepare for
         generation loop
@@ -344,16 +344,27 @@ class WhisperONNX(nn.Module):
         self.reset_inputs()
 
         # Create new generator params
+        # import pdb; pdb.set_trace()
         params = og.GeneratorParams(self.model)
-        params.audio_features = np.ascontiguousarray(
-            torch.cat(
-                [audio_features for _ in range(self.batch_size)], dim=0
-            ).detach().cpu().numpy().astype(np.float16 if self.fp16 else np.float32)
-        )
-        params.alignment_heads = np.ascontiguousarray(self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
-        params.input_ids = input_ids.detach().cpu().numpy()
-        if search_options != {}:
-            params.set_search_options(**search_options)
+
+        # non_contiguous_tensor = np.concatenate([audio_features.detach().cpu().numpy() for _ in range(2)], axis=-1)[:, :, ::2]
+        # params.set_model_input("audio_features", non_contiguous_tensor)
+
+        # audio_feats = audio_features.detach().cpu().contiguous().numpy().astype(np.float16 if self.fp16 else np.float32)
+        # params.set_model_input("audio_features", audio_features.detach().cpu().numpy())
+
+        # audio_features = np.ascontiguousarray(audio_features.detach().cpu().numpy().astype(np.float16 if self.fp16 else np.float32))
+        params.set_model_input("audio_features", audio_features.detach().cpu().numpy())
+        
+        # alignment_heads = np.ascontiguousarray(self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
+        params.set_model_input("alignment_heads", self.alignment_heads.detach().cpu().numpy().astype(np.int32).T)
+
+        # params.input_ids = input_ids.detach().cpu().numpy()
+        # params.input_ids = np.ascontiguousarray(input_ids.detach().cpu().numpy())
+        params.set_model_input("input_ids", input_ids.detach().cpu().numpy())
+        
+        search_options.update({"batch_size": audio_features.shape[0]})
+        params.set_search_options(**search_options)
 
         # Create new generator
         self.generator = og.Generator(self.model, params)
@@ -367,13 +378,14 @@ class WhisperONNX(nn.Module):
             # Delete old generator to free memory
             del self.generator
 
-    def embed_audio(self, mel: torch.Tensor, tokens: torch.Tensor):
+    def embed_audio(self, mel: torch.Tensor, tokens: torch.Tensor, search_options: dict):
         """
         Computes self.encoder(mel)
         """
-        self.set_inputs(mel, tokens)
-        # print("embed_audio called")
-        self.generator.compute_logits()
+        self.set_inputs(mel, tokens, search_options)
+        print("embed_audio called")
+        print(tokens.shape)
+        self.generator.generate_next_token()
         encoder_hidden_states = self.generator.get_output("encoder_hidden_states")
         return torch.from_numpy(encoder_hidden_states).to(dtype=mel.dtype, device=self.device)
 
@@ -381,29 +393,27 @@ class WhisperONNX(nn.Module):
         """
         Computes self.decoder(tokens, audio_features)
         """
-        # print("logits called")
-        self.generator.compute_logits()
+        print("logits called")
+        self.generator.generate_next_token()
         logits = self.generator.get_output("logits")
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
-    def forward(
-        self, mel: torch.Tensor, tokens: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    def forward(self, mel: torch.Tensor, tokens: torch.Tensor, search_options: dict):
         """
         Computes self.decoder(tokens, self.encoder(mel))
         """
-        self.set_inputs(mel, tokens)
-        # print("forward called")
-        self.generator.compute_logits()
+        self.set_inputs(mel, tokens, search_options)
+        print("forward called")
+        self.generator.generate_next_token()
         logits = self.generator.get_output("logits")
         return torch.from_numpy(logits).to(dtype=mel.dtype, device=self.device)
 
-    def encoder(self, mel: torch.Tensor, tokens: torch.Tensor):
+    def encoder(self, mel: torch.Tensor, tokens: torch.Tensor, search_options: dict):
         """
         Wrapper function instead of using `self.encoder = AudioEncoder(...)`
         and `self.encoder(inputs)`
         """
-        return self.embed_audio(mel, tokens)
+        return self.embed_audio(mel, tokens, search_options)
 
     def decoder(self, tokens: torch.Tensor, mel: torch.Tensor):
         """
